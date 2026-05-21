@@ -120,8 +120,8 @@ export function generateId(): string {
   return crypto.randomUUID()
 }
 
-export function groupTransactionsByDate(transactions: import('./types').Transaction[]) {
-  const groups: Record<string, import('./types').Transaction[]> = {}
+export function groupTransactionsByDate(transactions: Array<{ id: string; date: string; merchant: string; amount: number; [key: string]: unknown }>) {
+  const groups: Record<string, typeof transactions> = {}
   for (const t of transactions) {
     const key = t.date
     if (!groups[key]) groups[key] = []
@@ -130,14 +130,15 @@ export function groupTransactionsByDate(transactions: import('./types').Transact
   return Object.entries(groups).sort(([a], [b]) => b.localeCompare(a))
 }
 
-export function sumTransactions(transactions: import('./types').Transaction[]): number {
+export function sumTransactions(transactions: Array<{ amount: number }>): number {
   return transactions.reduce((sum, t) => sum + t.amount, 0)
 }
 
-export function getAccountColor(type: import('./types').AccountType): string {
+export function getAccountColor(type: string): string {
   switch (type) {
     case 'checking': return '#10b981'
     case 'savings': return '#3b82f6'
     case 'credit_card': return '#8b5cf6'
+    default: return '#94a3b8'
   }
 }
