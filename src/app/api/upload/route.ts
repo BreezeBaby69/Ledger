@@ -4,9 +4,9 @@ import { isTransferLike } from '@/lib/utils'
 
 // Try models in order until one works
 const GEMINI_MODELS = [
+  'gemini-2.5-flash',
   'gemini-2.0-flash',
-  'gemini-1.5-flash-latest',
-  'gemini-pro-vision',
+  'gemini-2.5-pro',
 ]
 
 async function callGemini(apiKey: string, parts: any[], model: string) {
