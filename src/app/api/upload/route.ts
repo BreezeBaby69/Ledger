@@ -4,6 +4,40 @@ import { isTransferLike } from '@/lib/utils'
 
 const GEMINI_MODEL = 'gemini-2.5-flash'
 
+function extractJSON(text: string): any[] | null {
+  // Strip markdown fences
+  let s = text.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim()
+  
+  // Try direct parse first
+  try {
+    const parsed = JSON.parse(s)
+    if (Array.isArray(parsed)) return parsed
+    // Maybe it's {transactions: [...]} or similar
+    for (const val of Object.values(parsed)) {
+      if (Array.isArray(val)) return val as any[]
+    }
+  } catch {}
+
+  // Find outermost [ ... ] by counting brackets
+  let depth = 0
+  let start = -1
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '[') {
+      if (depth === 0) start = i
+      depth++
+    } else if (s[i] === ']') {
+      depth--
+      if (depth === 0 && start !== -1) {
+        try {
+          const parsed = JSON.parse(s.substring(start, i + 1))
+          if (Array.isArray(parsed)) return parsed
+        } catch {}
+      }
+    }
+  }
+  return null
+}
+
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData()
@@ -33,24 +67,20 @@ export async function POST(req: NextRequest) {
 
     const prompt = `Extract all transactions from this Canadian bank or credit card statement.
 
-Return a JSON array of transaction objects. Each object has these fields:
-- date: string in YYYY-MM-DD format
-- merchant: string, cleaned up merchant name
-- amount: number, negative for purchases, positive for payments and refunds
-- suggested_category_id: string or null, pick from the list below
-- is_transfer: boolean, true only for payments between accounts
-- confidence: number between 0 and 1
-
-Category IDs to use:
-${categoryList}
+Return a JSON array of transaction objects with these fields:
+- date: "YYYY-MM-DD"
+- merchant: clean merchant name
+- amount: negative number for purchases, positive for payments/refunds
+- suggested_category_id: null (always use null, do not guess)
+- is_transfer: true for payments/transfers, false otherwise
+- confidence: 0.9
 
 Rules:
 - PAYMENT THANK YOU = is_transfer true, positive amount
 - Regular purchases = negative amounts
-- Refunds = positive amounts, is_transfer false
-- Extract every transaction, none missing
+- Extract every single transaction
 
-Return only the JSON array, nothing else.`
+Return only the raw JSON array starting with [ and ending with ].`
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`
 
@@ -64,10 +94,7 @@ Return only the JSON array, nothing else.`
             { inline_data: { mime_type: mimeType, data: base64 } }
           ]
         }],
-        generationConfig: {
-          temperature: 0,
-          maxOutputTokens: 8192,
-        }
+        generationConfig: { temperature: 0, maxOutputTokens: 8192 }
       }),
     })
 
@@ -75,7 +102,7 @@ Return only the JSON array, nothing else.`
 
     if (!geminiRes.ok) {
       return NextResponse.json(
-        { error: `Gemini error: ${geminiData?.error?.message || JSON.stringify(geminiData)}` },
+        { error: `Gemini error: ${geminiData?.error?.message || 'Unknown'}` },
         { status: 500 }
       )
     }
@@ -83,47 +110,48 @@ Return only the JSON array, nothing else.`
     const rawText = (geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim()
 
     if (!rawText) {
+      return NextResponse.json({ error: 'Gemini returned empty response.' }, { status: 500 })
+    }
+
+    const extracted = extractJSON(rawText)
+
+    if (!extracted || extracted.length === 0) {
       return NextResponse.json(
-        { error: 'Gemini returned empty response.' },
+        { error: `Could not parse AI response: ${rawText.substring(0, 200)}` },
         { status: 500 }
       )
     }
 
-    // Strip markdown code fences and find the JSON array
-    const cleaned = rawText
-      .replace(/```json\n?/gi, '')
-      .replace(/```\n?/g, '')
-      .trim()
-
-    let extracted: any[] = []
-    const start = cleaned.indexOf('[')
-    const end = cleaned.lastIndexOf(']')
-
-    if (start !== -1 && end !== -1 && end > start) {
-      try {
-        extracted = JSON.parse(cleaned.substring(start, end + 1))
-      } catch {
-        extracted = []
-      }
-    }
-
-    if (!Array.isArray(extracted) || extracted.length === 0) {
-      return NextResponse.json(
-        { error: `Could not parse response. AI said: ${cleaned.substring(0, 300)}` },
-        { status: 500 }
-      )
-    }
-
+    // Apply merchant rules and categorize
     const ruleMap = new Map((rules || []).map((r: any) => [r.merchant_pattern.toLowerCase(), r]))
+
+    // Get category IDs by name for fallback categorization
+    const catByName = new Map((categories || []).map((c: any) => [c.name.toLowerCase(), c.id]))
 
     const transactions = extracted.map((t: any) => {
       const merchantLower = (t.merchant || '').toLowerCase()
-      let categoryId = t.suggested_category_id || null
+      let categoryId: string | null = null
 
+      // Apply saved rules first
       for (const [pattern, rule] of Array.from(ruleMap)) {
         if (merchantLower.includes(pattern as string)) {
           categoryId = (rule as any).category_id
           break
+        }
+      }
+
+      // Auto-categorize common merchants if no rule matched
+      if (!categoryId) {
+        if (/costco|walmart|safeway|superstore|sobeys|iga|loblaws/i.test(t.merchant)) {
+          categoryId = catByName.get('groceries') || null
+        } else if (/tim hortons|mcdonald|starbucks|subway|a&w|burger|pizza|restaurant|cafe|sushi|chipotle/i.test(t.merchant)) {
+          categoryId = catByName.get('restaurants') || null
+        } else if (/shell|esso|petro|husky|pioneer|gas/i.test(t.merchant)) {
+          categoryId = catByName.get('gas') || null
+        } else if (/netflix|spotify|amazon prime|disney|crave|apple|google play/i.test(t.merchant)) {
+          categoryId = catByName.get('subscriptions') || null
+        } else if (/atco|enmax|telus|shaw|rogers|bell|utilities/i.test(t.merchant)) {
+          categoryId = catByName.get('utilities') || null
         }
       }
 
@@ -136,7 +164,7 @@ Return only the JSON array, nothing else.`
         is_transfer_candidate: t.is_transfer || isTransferLike(t.merchant || ''),
         is_duplicate_candidate: false,
         status: 'pending',
-        confidence: t.confidence ?? 0.8,
+        confidence: 0.9,
       }
     })
 
