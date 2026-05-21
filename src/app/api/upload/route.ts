@@ -117,7 +117,7 @@ Respond with ONLY the JSON array, nothing else.`
       const merchantLower = (t.merchant || '').toLowerCase()
       let categoryId = t.suggested_category_id || null
 
-      for (const [pattern, rule] of ruleMap) {
+      for (const [pattern, rule] of Array.from(ruleMap)) {
         if (merchantLower.includes(pattern)) {
           categoryId = rule.category_id
           break
