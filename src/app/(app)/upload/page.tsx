@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useCallback } from 'react'
-import { Upload, FileText, Image, X, CheckCircle, AlertCircle, ChevronRight, Loader2 } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { Upload, FileText, X, CheckCircle, AlertCircle, ChevronRight, Loader2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { cn } from '@/lib/utils'
 import ImportReview from '@/components/upload/ImportReview'
@@ -25,12 +25,14 @@ export default function UploadPage() {
   const [error, setError] = useState('')
   const supabase = createClient()
 
-  const loadAccounts = useCallback(async () => {
-    const { data } = await supabase.from('accounts').select('*').order('name')
-    setAccounts(data || [])
+  useEffect(() => {
+    loadAccounts()
   }, [])
 
-  useState(() => { loadAccounts() })
+  async function loadAccounts() {
+    const { data } = await supabase.from('accounts').select('*').order('name')
+    setAccounts(data || [])
+  }
 
   function handleFiles(incoming: FileList | File[]) {
     const arr = Array.from(incoming)
@@ -105,9 +107,9 @@ export default function UploadPage() {
     setFiles([])
     setPendingTxns([])
     setError('')
+    loadAccounts()
   }
 
-  // Review screen
   if (status === 'review') {
     return (
       <ImportReview
@@ -119,7 +121,6 @@ export default function UploadPage() {
     )
   }
 
-  // Done screen
   if (status === 'done') {
     return (
       <div className="flex flex-col items-center justify-center py-20 space-y-4 page-transition">
@@ -130,10 +131,7 @@ export default function UploadPage() {
         <p className="text-muted-foreground text-sm text-center">
           Transactions have been added to your budget.
         </p>
-        <button
-          onClick={reset}
-          className="mt-4 bg-violet-500 text-white rounded-2xl px-6 py-3 text-sm font-semibold"
-        >
+        <button onClick={reset} className="mt-4 bg-violet-500 text-white rounded-2xl px-6 py-3 text-sm font-semibold">
           Import More
         </button>
         <a href="/transactions" className="text-violet-400 text-sm">View Transactions</a>
@@ -176,7 +174,7 @@ export default function UploadPage() {
             </button>
           ))}
           {accounts.length === 0 && (
-            <div className="p-4 rounded-2xl border border-dashed text-center">
+            <div className="p-6 rounded-2xl border border-dashed text-center">
               <p className="text-sm text-muted-foreground">
                 No accounts yet. <a href="/settings" className="text-violet-400">Add one in Settings.</a>
               </p>
