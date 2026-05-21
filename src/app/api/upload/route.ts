@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
 Return a JSON array of transaction objects. Each object has these fields:
 - date: string in YYYY-MM-DD format
 - merchant: string, cleaned up merchant name
-- amount: number, negative for purchases, positive for payments and refunds  
+- amount: number, negative for purchases, positive for payments and refunds
 - suggested_category_id: string or null, pick from the list below
 - is_transfer: boolean, true only for payments between accounts
 - confidence: number between 0 and 1
@@ -67,7 +67,6 @@ Return only the JSON array, nothing else.`
         generationConfig: {
           temperature: 0,
           maxOutputTokens: 8192,
-
         }
       }),
     })
@@ -81,34 +80,36 @@ Return only the JSON array, nothing else.`
       )
     }
 
-    // Get text from response
-    const rawText = (
-      geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || ''
-    ).trim()
+    const rawText = (geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim()
 
     if (!rawText) {
       return NextResponse.json(
-        { error: 'Gemini returned empty response. Try a clearer image or smaller file.' },
+        { error: 'Gemini returned empty response.' },
         { status: 500 }
       )
     }
 
-    // Parse - find array boundaries
+    // Strip markdown code fences and find the JSON array
+    const cleaned = rawText
+      .replace(/```json\n?/gi, '')
+      .replace(/```\n?/g, '')
+      .trim()
+
     let extracted: any[] = []
-    try {
-      const cleaned = rawText.replace(/```json\n?/gi, "").replace(/```\n?/g, "").trim()
-      const start = cleaned.indexOf('[')
-      const end = cleaned.lastIndexOf(']')
-      if (start !== -1 && end !== -1 && end > start) {
+    const start = cleaned.indexOf('[')
+    const end = cleaned.lastIndexOf(']')
+
+    if (start !== -1 && end !== -1 && end > start) {
+      try {
         extracted = JSON.parse(cleaned.substring(start, end + 1))
-      } else {
-        // Try parsing the whole thing
-        extracted = JSON.parse(cleaned)
+      } catch {
+        extracted = []
       }
-      if (!Array.isArray(extracted)) extracted = []
-    } catch {
+    }
+
+    if (!Array.isArray(extracted) || extracted.length === 0) {
       return NextResponse.json(
-        { error: `Parse failed. AI said: ${cleaned.substring(0, 300)}` },
+        { error: `Could not parse response. AI said: ${cleaned.substring(0, 300)}` },
         { status: 500 }
       )
     }
