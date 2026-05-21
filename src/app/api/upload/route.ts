@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { isTransferLike } from '@/lib/utils'
 
-const GEMINI_MODEL = 'gemini-2.0-flash'
+const GEMINI_MODEL = 'gemini-2.5-flash'
 
 export async function POST(req: NextRequest) {
   try {
@@ -67,7 +67,7 @@ Return only the JSON array, nothing else.`
         generationConfig: {
           temperature: 0,
           maxOutputTokens: 8192,
-          responseMimeType: 'application/json',
+
         }
       }),
     })
