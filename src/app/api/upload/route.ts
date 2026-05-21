@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { isTransferLike } from '@/lib/utils'
 
-const GEMINI_MODEL = 'gemini-2.5-flash'
+const GEMINI_MODEL = 'gemini-2.0-flash'
 
 export async function POST(req: NextRequest) {
   try {
@@ -31,26 +31,29 @@ export async function POST(req: NextRequest) {
 
     const categoryList = (categories || []).map((c: any) => `${c.id}: ${c.icon} ${c.name}`).join('\n')
 
-    const prompt = `You are a financial statement parser for Canadian bank and credit card statements.
-Extract ALL transactions from this statement.
+    const prompt = `Extract all transactions from this Canadian bank or credit card statement.
 
-Return ONLY a valid JSON array. No markdown, no explanation, no code blocks. Just the raw JSON array starting with [ and ending with ].
+Return a JSON array of transaction objects. Each object has these fields:
+- date: string in YYYY-MM-DD format
+- merchant: string, cleaned up merchant name
+- amount: number, negative for purchases, positive for payments and refunds  
+- suggested_category_id: string or null, pick from the list below
+- is_transfer: boolean, true only for payments between accounts
+- confidence: number between 0 and 1
 
-Each object must have:
-- date: "YYYY-MM-DD" (use the post/transaction date)
-- merchant: clean merchant name
-- amount: number, NEGATIVE for purchases, POSITIVE for payments and refunds
-- suggested_category_id: one of the IDs below or null
-- is_transfer: true for payments/transfers only
-- confidence: 0 to 1
-
-Available category IDs:
+Category IDs to use:
 ${categoryList}
 
-Start your response with [ and end with ]. Nothing before or after the array.`
+Rules:
+- PAYMENT THANK YOU = is_transfer true, positive amount
+- Regular purchases = negative amounts
+- Refunds = positive amounts, is_transfer false
+- Extract every transaction, none missing
+
+Return only the JSON array, nothing else.`
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`
-    
+
     const geminiRes = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -64,6 +67,7 @@ Start your response with [ and end with ]. Nothing before or after the array.`
         generationConfig: {
           temperature: 0,
           maxOutputTokens: 8192,
+          responseMimeType: 'application/json',
         }
       }),
     })
@@ -72,29 +76,40 @@ Start your response with [ and end with ]. Nothing before or after the array.`
 
     if (!geminiRes.ok) {
       return NextResponse.json(
-        { error: `Gemini error: ${geminiData?.error?.message || 'Unknown error'}` },
+        { error: `Gemini error: ${geminiData?.error?.message || JSON.stringify(geminiData)}` },
         { status: 500 }
       )
     }
 
-    const rawText = (geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim()
+    // Get text from response
+    const rawText = (
+      geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || ''
+    ).trim()
 
-    // Extract JSON array from anywhere in the response
+    if (!rawText) {
+      return NextResponse.json(
+        { error: 'Gemini returned empty response. Try a clearer image or smaller file.' },
+        { status: 500 }
+      )
+    }
+
+    // Parse - find array boundaries
     let extracted: any[] = []
     try {
-      // Find the first [ and last ] and parse what's between them
       const start = rawText.indexOf('[')
       const end = rawText.lastIndexOf(']')
-      if (start === -1 || end === -1) {
-        throw new Error('No JSON array found in response')
+      if (start !== -1 && end !== -1 && end > start) {
+        extracted = JSON.parse(rawText.substring(start, end + 1))
+      } else {
+        // Try parsing the whole thing
+        extracted = JSON.parse(rawText)
       }
-      const jsonStr = rawText.substring(start, end + 1)
-      extracted = JSON.parse(jsonStr)
       if (!Array.isArray(extracted)) extracted = []
-    } catch (parseErr: any) {
-      return NextResponse.json({
-        error: 'Could not parse AI response: ' + parseErr.message
-      }, { status: 500 })
+    } catch {
+      return NextResponse.json(
+        { error: `Parse failed. AI said: ${rawText.substring(0, 300)}` },
+        { status: 500 }
+      )
     }
 
     const ruleMap = new Map((rules || []).map((r: any) => [r.merchant_pattern.toLowerCase(), r]))
