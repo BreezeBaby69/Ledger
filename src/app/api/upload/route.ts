@@ -4,40 +4,6 @@ import { isTransferLike } from '@/lib/utils'
 
 const GEMINI_MODEL = 'gemini-2.5-flash'
 
-function extractJSON(text: string): any[] | null {
-  // Strip markdown fences
-  let s = text.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim()
-  
-  // Try direct parse first
-  try {
-    const parsed = JSON.parse(s)
-    if (Array.isArray(parsed)) return parsed
-    // Maybe it's {transactions: [...]} or similar
-    for (const val of Object.values(parsed)) {
-      if (Array.isArray(val)) return val as any[]
-    }
-  } catch {}
-
-  // Find outermost [ ... ] by counting brackets
-  let depth = 0
-  let start = -1
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] === '[') {
-      if (depth === 0) start = i
-      depth++
-    } else if (s[i] === ']') {
-      depth--
-      if (depth === 0 && start !== -1) {
-        try {
-          const parsed = JSON.parse(s.substring(start, i + 1))
-          if (Array.isArray(parsed)) return parsed
-        } catch {}
-      }
-    }
-  }
-  return null
-}
-
 export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData()
@@ -63,24 +29,17 @@ export async function POST(req: NextRequest) {
       supabase.from('categories').select('id, name, icon').order('name'),
     ])
 
-    const categoryList = (categories || []).map((c: any) => `${c.id}: ${c.icon} ${c.name}`).join('\n')
-
     const prompt = `Extract all transactions from this Canadian bank or credit card statement.
 
-Return a JSON array of transaction objects with these fields:
+Return a JSON array. Each item has:
 - date: "YYYY-MM-DD"
-- merchant: clean merchant name
-- amount: negative number for purchases, positive for payments/refunds
-- suggested_category_id: null (always use null, do not guess)
-- is_transfer: true for payments/transfers, false otherwise
-- confidence: 0.9
+- merchant: clean name
+- amount: negative for purchases, positive for payments
+- is_transfer: true for payments only
 
-Rules:
-- PAYMENT THANK YOU = is_transfer true, positive amount
-- Regular purchases = negative amounts
-- Extract every single transaction
+Example: [{"date":"2026-04-24","merchant":"Payment Thank You","amount":879.68,"is_transfer":true},{"date":"2026-04-10","merchant":"Costco","amount":-142.55,"is_transfer":false}]
 
-Return only the raw JSON array starting with [ and ending with ].`
+Return ONLY the JSON array.`
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`
 
@@ -110,29 +69,42 @@ Return only the raw JSON array starting with [ and ending with ].`
     const rawText = (geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim()
 
     if (!rawText) {
-      return NextResponse.json({ error: 'Gemini returned empty response.' }, { status: 500 })
+      return NextResponse.json({ error: 'Empty response from AI' }, { status: 500 })
     }
 
-    const extracted = extractJSON(rawText)
+    // Strip ALL non-JSON content — keep only what's between the first [ and last ]
+    const firstBracket = rawText.indexOf('[')
+    const lastBracket = rawText.lastIndexOf(']')
 
-    if (!extracted || extracted.length === 0) {
+    if (firstBracket === -1 || lastBracket === -1 || lastBracket <= firstBracket) {
       return NextResponse.json(
-        { error: `Could not parse AI response: ${rawText.substring(0, 200)}` },
+        { error: `No JSON array in response: ${rawText.substring(0, 200)}` },
         { status: 500 }
       )
     }
 
-    // Apply merchant rules and categorize
-    const ruleMap = new Map((rules || []).map((r: any) => [r.merchant_pattern.toLowerCase(), r]))
+    const jsonStr = rawText.substring(firstBracket, lastBracket + 1)
 
-    // Get category IDs by name for fallback categorization
+    let extracted: any[] = []
+    try {
+      extracted = JSON.parse(jsonStr)
+      if (!Array.isArray(extracted)) extracted = []
+    } catch (e: any) {
+      return NextResponse.json(
+        { error: `JSON parse error: ${e.message}. Data: ${jsonStr.substring(0, 200)}` },
+        { status: 500 }
+      )
+    }
+
+    // Get category IDs by name for auto-categorization
     const catByName = new Map((categories || []).map((c: any) => [c.name.toLowerCase(), c.id]))
+    const ruleMap = new Map((rules || []).map((r: any) => [r.merchant_pattern.toLowerCase(), r]))
 
     const transactions = extracted.map((t: any) => {
       const merchantLower = (t.merchant || '').toLowerCase()
       let categoryId: string | null = null
 
-      // Apply saved rules first
+      // Apply saved merchant rules first
       for (const [pattern, rule] of Array.from(ruleMap)) {
         if (merchantLower.includes(pattern as string)) {
           categoryId = (rule as any).category_id
@@ -140,24 +112,30 @@ Return only the raw JSON array starting with [ and ending with ].`
         }
       }
 
-      // Auto-categorize common merchants if no rule matched
+      // Auto-categorize by merchant name if no rule matched
       if (!categoryId) {
-        if (/costco|walmart|safeway|superstore|sobeys|iga|loblaws/i.test(t.merchant)) {
+        if (/costco|walmart|safeway|superstore|sobeys|loblaws|iga|freshco|no frills/i.test(merchantLower)) {
           categoryId = catByName.get('groceries') || null
-        } else if (/tim hortons|mcdonald|starbucks|subway|a&w|burger|pizza|restaurant|cafe|sushi|chipotle/i.test(t.merchant)) {
+        } else if (/tim horton|mcdonald|starbucks|subway|a&w|burger|pizza|restaurant|cafe|sushi|chipotle|firehouse|italian centre/i.test(merchantLower)) {
           categoryId = catByName.get('restaurants') || null
-        } else if (/shell|esso|petro|husky|pioneer|gas/i.test(t.merchant)) {
+        } else if (/shell|esso|petro|husky|pioneer|costco gas|hughes/i.test(merchantLower)) {
           categoryId = catByName.get('gas') || null
-        } else if (/netflix|spotify|amazon prime|disney|crave|apple|google play/i.test(t.merchant)) {
+        } else if (/netflix|spotify|amazon prime|disney|crave|apple\.com|google play|crunchyroll/i.test(merchantLower)) {
           categoryId = catByName.get('subscriptions') || null
-        } else if (/atco|enmax|telus|shaw|rogers|bell|utilities/i.test(t.merchant)) {
+        } else if (/atco|enmax|telus|shaw|rogers|bell|epcor/i.test(merchantLower)) {
           categoryId = catByName.get('utilities') || null
+        } else if (/best buy|amazon|ikea|home depot|canadian tire|sport chek|old navy|winners|chapters/i.test(merchantLower)) {
+          categoryId = catByName.get('shopping') || null
+        } else if (/cineplex|ticketmaster|live bowld|golf|landmark/i.test(merchantLower)) {
+          categoryId = catByName.get('entertainment') || null
+        } else if (/crunch|goodlife|equinox|ymca/i.test(merchantLower)) {
+          categoryId = catByName.get('subscriptions') || null
         }
       }
 
       return {
         id: crypto.randomUUID(),
-        date: t.date,
+        date: t.date || new Date().toISOString().split('T')[0],
         merchant: t.merchant || 'Unknown',
         amount: typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount)) || 0,
         suggested_category_id: categoryId,
