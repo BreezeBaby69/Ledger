@@ -34,89 +34,66 @@ export async function POST(req: NextRequest) {
     const prompt = `You are a financial statement parser for Canadian bank and credit card statements.
 Extract ALL transactions from this statement.
 
-Return ONLY a valid JSON array. No markdown, no explanation, no code blocks. Just the raw JSON array.
+Return ONLY a valid JSON array. No markdown, no explanation, no code blocks. Just the raw JSON array starting with [ and ending with ].
 
 Each object must have:
-- date: "YYYY-MM-DD"
-- merchant: clean merchant name (e.g. "COSTCO WHOLESALE W1112 EDMONTON AB" becomes "Costco")
-- amount: number, NEGATIVE for purchases/charges, POSITIVE for payments/credits/refunds
-- suggested_category_id: one of the IDs below, or null
-- is_transfer: true if it's a payment or transfer, false otherwise
+- date: "YYYY-MM-DD" (use the post/transaction date)
+- merchant: clean merchant name
+- amount: number, NEGATIVE for purchases, POSITIVE for payments and refunds
+- suggested_category_id: one of the IDs below or null
+- is_transfer: true for payments/transfers only
 - confidence: 0 to 1
 
 Available category IDs:
 ${categoryList}
 
-Important rules:
-- "PAYMENT THANK YOU" and "PAIEMENT MERCI" = is_transfer true, amount POSITIVE, category null
-- All regular purchases = NEGATIVE amounts
-- Refunds/credits = POSITIVE amounts, is_transfer false
-- Extract every single transaction, do not summarize or skip any
-- Use the post date (second date column) for the date field
-
-Example output format:
-[{"date":"2026-04-10","merchant":"Costco","amount":-142.55,"suggested_category_id":null,"is_transfer":false,"confidence":0.95}]`
-
-    const requestBody = {
-      contents: [{
-        parts: [
-          { text: prompt },
-          {
-            inline_data: {
-              mime_type: mimeType,
-              data: base64
-            }
-          }
-        ]
-      }],
-      generationConfig: {
-        temperature: 0,
-        maxOutputTokens: 8192,
-        responseMimeType: 'application/json',
-      }
-    }
+Start your response with [ and end with ]. Nothing before or after the array.`
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`
+    
     const geminiRes = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: mimeType, data: base64 } }
+          ]
+        }],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 8192,
+        }
+      }),
     })
 
     const geminiData = await geminiRes.json()
 
     if (!geminiRes.ok) {
-      console.error('Gemini error:', JSON.stringify(geminiData))
       return NextResponse.json(
         { error: `Gemini error: ${geminiData?.error?.message || 'Unknown error'}` },
         { status: 500 }
       )
     }
 
-    const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '[]'
-    console.log('Gemini raw response (first 500 chars):', rawText.substring(0, 500))
+    const rawText = (geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim()
 
+    // Extract JSON array from anywhere in the response
     let extracted: any[] = []
     try {
-      const clean = rawText
-        .replace(/```json\n?/gi, '')
-        .replace(/```\n?/g, '')
-        .trim()
-      extracted = JSON.parse(clean)
-      if (!Array.isArray(extracted)) {
-        // Maybe it's wrapped in an object
-        const keys = Object.keys(extracted)
-        for (const key of keys) {
-          if (Array.isArray((extracted as any)[key])) {
-            extracted = (extracted as any)[key]
-            break
-          }
-        }
+      // Find the first [ and last ] and parse what's between them
+      const start = rawText.indexOf('[')
+      const end = rawText.lastIndexOf(']')
+      if (start === -1 || end === -1) {
+        throw new Error('No JSON array found in response')
       }
-    } catch (parseErr) {
-      console.error('Parse error:', parseErr, 'Raw:', rawText.substring(0, 1000))
+      const jsonStr = rawText.substring(start, end + 1)
+      extracted = JSON.parse(jsonStr)
+      if (!Array.isArray(extracted)) extracted = []
+    } catch (parseErr: any) {
       return NextResponse.json({
-        error: 'Could not parse AI response. Raw: ' + rawText.substring(0, 200)
+        error: 'Could not parse AI response: ' + parseErr.message
       }, { status: 500 })
     }
 
