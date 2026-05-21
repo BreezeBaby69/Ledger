@@ -53,7 +53,7 @@ Return ONLY the JSON array.`
             { inline_data: { mime_type: mimeType, data: base64 } }
           ]
         }],
-        generationConfig: { temperature: 0, maxOutputTokens: 8192 }
+        generationConfig: { temperature: 0, maxOutputTokens: 65536 }
       }),
     })
 
