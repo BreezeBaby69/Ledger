@@ -2,25 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
 import { isTransferLike } from '@/lib/utils'
 
-// Try models in order until one works
-const GEMINI_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-2.5-pro',
-]
-
-async function callGemini(apiKey: string, parts: any[], model: string) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts }],
-      generationConfig: { temperature: 0.1, maxOutputTokens: 8192 },
-    }),
-  })
-  return res
-}
+const GEMINI_MODEL = 'gemini-2.5-flash'
 
 export async function POST(req: NextRequest) {
   try {
@@ -39,7 +21,7 @@ export async function POST(req: NextRequest) {
 
     const bytes = await file.arrayBuffer()
     const base64 = Buffer.from(bytes).toString('base64')
-    const mimeType = file.type || 'image/jpeg'
+    const mimeType = file.type || 'application/pdf'
 
     const supabase = createAdminClient()
     const [{ data: rules }, { data: categories }] = await Promise.all([
@@ -50,67 +32,92 @@ export async function POST(req: NextRequest) {
     const categoryList = (categories || []).map((c: any) => `${c.id}: ${c.icon} ${c.name}`).join('\n')
 
     const prompt = `You are a financial statement parser for Canadian bank and credit card statements.
-Extract ALL transactions from this statement image or PDF.
+Extract ALL transactions from this statement.
 
-Return ONLY a valid JSON array with no other text, markdown, or explanation.
+Return ONLY a valid JSON array. No markdown, no explanation, no code blocks. Just the raw JSON array.
 
-Each transaction object must have exactly these fields:
-- date: string "YYYY-MM-DD"
-- merchant: string (clean name, e.g. "COSTCO WHSE #0152 EDMONTON AB" becomes "Costco")
-- amount: number (NEGATIVE for debits/purchases, POSITIVE for credits/deposits/refunds)
-- suggested_category_id: string or null (use one of the IDs below)
-- is_transfer: boolean (true for payments, e-transfers, "PAYMENT THANK YOU", etc.)
-- confidence: number 0-1
+Each object must have:
+- date: "YYYY-MM-DD"
+- merchant: clean merchant name (e.g. "COSTCO WHOLESALE W1112 EDMONTON AB" becomes "Costco")
+- amount: number, NEGATIVE for purchases/charges, POSITIVE for payments/credits/refunds
+- suggested_category_id: one of the IDs below, or null
+- is_transfer: true if it's a payment or transfer, false otherwise
+- confidence: 0 to 1
 
 Available category IDs:
 ${categoryList}
 
-Rules:
-- Extract every single transaction, do not skip any
-- Credit card payments and bank transfers: is_transfer true, suggested_category_id null
-- Refunds and credits that are NOT transfers: positive amount
-- Skip opening/closing balances and summary totals
-- Make your best guess if unclear, set confidence low
+Important rules:
+- "PAYMENT THANK YOU" and "PAIEMENT MERCI" = is_transfer true, amount POSITIVE, category null
+- All regular purchases = NEGATIVE amounts
+- Refunds/credits = POSITIVE amounts, is_transfer false
+- Extract every single transaction, do not summarize or skip any
+- Use the post date (second date column) for the date field
 
-Respond with ONLY the JSON array, nothing else.`
+Example output format:
+[{"date":"2026-04-10","merchant":"Costco","amount":-142.55,"suggested_category_id":null,"is_transfer":false,"confidence":0.95}]`
 
-    const parts: any[] = [
-      { text: prompt },
-      { inline_data: { mime_type: mimeType, data: base64 } }
-    ]
-
-    // Try each model until one works
-    let geminiRes: Response | null = null
-    let workingModel = ''
-    for (const model of GEMINI_MODELS) {
-      const res = await callGemini(apiKey, parts, model)
-      if (res.ok) {
-        geminiRes = res
-        workingModel = model
-        break
+    const requestBody = {
+      contents: [{
+        parts: [
+          { text: prompt },
+          {
+            inline_data: {
+              mime_type: mimeType,
+              data: base64
+            }
+          }
+        ]
+      }],
+      generationConfig: {
+        temperature: 0,
+        maxOutputTokens: 8192,
+        responseMimeType: 'application/json',
       }
-      const errData = await res.json()
-      console.log(`Model ${model} failed:`, errData?.error?.message)
     }
 
-    if (!geminiRes) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`
+    const geminiRes = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    })
+
+    const geminiData = await geminiRes.json()
+
+    if (!geminiRes.ok) {
+      console.error('Gemini error:', JSON.stringify(geminiData))
       return NextResponse.json(
-        { error: 'All Gemini models failed. Check your API key is valid and has access.' },
+        { error: `Gemini error: ${geminiData?.error?.message || 'Unknown error'}` },
         { status: 500 }
       )
     }
 
-    const geminiData = await geminiRes.json()
     const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '[]'
+    console.log('Gemini raw response (first 500 chars):', rawText.substring(0, 500))
 
     let extracted: any[] = []
     try {
-      const clean = rawText.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim()
+      const clean = rawText
+        .replace(/```json\n?/gi, '')
+        .replace(/```\n?/g, '')
+        .trim()
       extracted = JSON.parse(clean)
-      if (!Array.isArray(extracted)) extracted = []
-    } catch {
-      console.error('Failed to parse Gemini response:', rawText)
-      return NextResponse.json({ error: 'AI returned unreadable data. Try a clearer image.' }, { status: 500 })
+      if (!Array.isArray(extracted)) {
+        // Maybe it's wrapped in an object
+        const keys = Object.keys(extracted)
+        for (const key of keys) {
+          if (Array.isArray((extracted as any)[key])) {
+            extracted = (extracted as any)[key]
+            break
+          }
+        }
+      }
+    } catch (parseErr) {
+      console.error('Parse error:', parseErr, 'Raw:', rawText.substring(0, 1000))
+      return NextResponse.json({
+        error: 'Could not parse AI response. Raw: ' + rawText.substring(0, 200)
+      }, { status: 500 })
     }
 
     const ruleMap = new Map((rules || []).map((r: any) => [r.merchant_pattern.toLowerCase(), r]))
@@ -130,7 +137,7 @@ Respond with ONLY the JSON array, nothing else.`
         id: crypto.randomUUID(),
         date: t.date,
         merchant: t.merchant || 'Unknown',
-        amount: typeof t.amount === 'number' ? t.amount : parseFloat(t.amount) || 0,
+        amount: typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount)) || 0,
         suggested_category_id: categoryId,
         is_transfer_candidate: t.is_transfer || isTransferLike(t.merchant || ''),
         is_duplicate_candidate: false,
@@ -141,7 +148,7 @@ Respond with ONLY the JSON array, nothing else.`
 
     transactions.sort((a: any, b: any) => (b.date || '').localeCompare(a.date || ''))
 
-    return NextResponse.json({ transactions, count: transactions.length, model: workingModel })
+    return NextResponse.json({ transactions, count: transactions.length })
 
   } catch (err: any) {
     console.error('Upload error:', err)
