@@ -96,18 +96,19 @@ Return only the JSON array, nothing else.`
     // Parse - find array boundaries
     let extracted: any[] = []
     try {
-      const start = rawText.indexOf('[')
-      const end = rawText.lastIndexOf(']')
+      const cleaned = rawText.replace(/```json\n?/gi, "").replace(/```\n?/g, "").trim()
+      const start = cleaned.indexOf('[')
+      const end = cleaned.lastIndexOf(']')
       if (start !== -1 && end !== -1 && end > start) {
-        extracted = JSON.parse(rawText.substring(start, end + 1))
+        extracted = JSON.parse(cleaned.substring(start, end + 1))
       } else {
         // Try parsing the whole thing
-        extracted = JSON.parse(rawText)
+        extracted = JSON.parse(cleaned)
       }
       if (!Array.isArray(extracted)) extracted = []
     } catch {
       return NextResponse.json(
-        { error: `Parse failed. AI said: ${rawText.substring(0, 300)}` },
+        { error: `Parse failed. AI said: ${cleaned.substring(0, 300)}` },
         { status: 500 }
       )
     }
