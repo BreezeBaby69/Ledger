@@ -27,15 +27,13 @@ export default function TransactionEditModal({ transaction, categories, accounts
 
   // Lock body scroll on iOS when modal is open
   useEffect(() => {
-    const originalStyle = window.getComputedStyle(document.body).overflow
     const scrollY = window.scrollY
     document.body.style.overflow = 'hidden'
     document.body.style.position = 'fixed'
     document.body.style.top = `-${scrollY}px`
     document.body.style.width = '100%'
-
     return () => {
-      document.body.style.overflow = originalStyle
+      document.body.style.overflow = ''
       document.body.style.position = ''
       document.body.style.top = ''
       document.body.style.width = ''
@@ -45,35 +43,53 @@ export default function TransactionEditModal({ transaction, categories, accounts
 
   async function handleSave() {
     setSaving(true)
-    await supabase.from('transactions').update({
-      merchant,
-      category_id: categoryId || null,
-      account_id: accountId,
-      date,
-      notes: notes || null,
-      is_transfer: isTransfer,
-    }).eq('id', transaction.id)
+    try {
+      // Save transaction — capture current state values directly
+      const { error } = await supabase.from('transactions').update({
+        merchant,
+        category_id: categoryId || null,
+        account_id: accountId,
+        date,
+        notes: notes || null,
+        is_transfer: isTransfer,
+      }).eq('id', transaction.id)
 
-    if (categoryId && categoryId !== transaction.category_id) {
-      const { data: existing } = await supabase
-        .from('merchant_rules')
-        .select('id')
-        .eq('merchant_pattern', merchant)
-        .single()
-
-      if (existing) {
-        await supabase.from('merchant_rules').update({ category_id: categoryId }).eq('id', existing.id)
-      } else {
-        await supabase.from('merchant_rules').insert({
-          merchant_pattern: merchant,
-          category_id: categoryId,
-          match_type: 'contains',
-        })
+      if (error) {
+        console.error('Save error:', error)
+        alert('Failed to save: ' + error.message)
+        setSaving(false)
+        return
       }
-    }
 
-    setSaving(false)
-    onSave()
+      // Learn from category correction (don't let this block the save)
+      if (categoryId && categoryId !== transaction.category_id) {
+        try {
+          const { data: existing } = await supabase
+            .from('merchant_rules')
+            .select('id')
+            .eq('merchant_pattern', merchant)
+            .maybeSingle() // use maybeSingle instead of single — won't throw if not found
+
+          if (existing) {
+            await supabase.from('merchant_rules').update({ category_id: categoryId }).eq('id', existing.id)
+          } else {
+            await supabase.from('merchant_rules').insert({
+              merchant_pattern: merchant,
+              category_id: categoryId,
+              match_type: 'contains',
+            })
+          }
+        } catch {
+          // Don't fail the save if rule creation fails
+        }
+      }
+
+      onSave()
+    } catch (err: any) {
+      alert('Error: ' + err.message)
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function handleDelete() {
@@ -84,20 +100,16 @@ export default function TransactionEditModal({ transaction, categories, accounts
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center">
-      {/* Backdrop */}
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Sheet */}
       <div
         className="relative w-full max-w-md bg-card rounded-t-3xl border-t border-x z-10 flex flex-col"
         style={{ maxHeight: '85vh' }}
       >
-        {/* Handle */}
         <div className="flex justify-center pt-3 pb-1 flex-shrink-0">
           <div className="w-10 h-1 bg-muted-foreground/30 rounded-full" />
         </div>
 
-        {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b flex-shrink-0">
           <h2 className="font-semibold">Edit Transaction</h2>
           <div className="flex gap-2">
@@ -110,7 +122,6 @@ export default function TransactionEditModal({ transaction, categories, accounts
           </div>
         </div>
 
-        {/* Amount */}
         <div className="px-5 py-4 border-b text-center flex-shrink-0">
           <p className={cn('text-3xl font-semibold tabular-nums', transaction.amount > 0 ? 'text-emerald-400' : 'text-foreground')}>
             {transaction.amount > 0 ? '+' : ''}{formatCurrency(transaction.amount)}
@@ -118,11 +129,7 @@ export default function TransactionEditModal({ transaction, categories, accounts
           <p className="text-xs text-muted-foreground mt-1">{formatDate(date, 'MMMM d, yyyy')}</p>
         </div>
 
-        {/* Scrollable content */}
-        <div
-          className="flex-1 overflow-y-auto px-5 py-4 space-y-4"
-          style={{ WebkitOverflowScrolling: 'touch' }}
-        >
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4" style={{ WebkitOverflowScrolling: 'touch' }}>
           <div>
             <label className="text-xs text-muted-foreground font-medium mb-1.5 block">Merchant</label>
             <input value={merchant} onChange={e => setMerchant(e.target.value)}
@@ -162,23 +169,25 @@ export default function TransactionEditModal({ transaction, categories, accounts
               className="w-full bg-muted/50 border rounded-xl px-3 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-violet-500/50" />
           </div>
 
-          <div className="flex items-center justify-between p-3 bg-muted/50 rounded-xl">
+          {/* Transfer toggle */}
+          <div
+            className="flex items-center justify-between p-3 bg-muted/50 rounded-xl cursor-pointer"
+            onClick={() => setIsTransfer(prev => !prev)}
+          >
             <div>
               <p className="text-sm font-medium">Mark as Transfer</p>
               <p className="text-xs text-muted-foreground">Exclude from spending & income totals</p>
             </div>
-            <button onClick={() => setIsTransfer(!isTransfer)}
-              className={cn('w-11 h-6 rounded-full transition-all duration-200 relative flex-shrink-0',
-                isTransfer ? 'bg-violet-500' : 'bg-muted-foreground/30')}>
+            <div className={cn('w-11 h-6 rounded-full transition-all duration-200 relative flex-shrink-0 ml-4',
+              isTransfer ? 'bg-violet-500' : 'bg-muted-foreground/30')}>
               <div className={cn('absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all duration-200',
                 isTransfer ? 'left-5' : 'left-0.5')} />
-            </button>
+            </div>
           </div>
 
           <div className="h-2" />
         </div>
 
-        {/* Save button */}
         <div className="px-5 pb-8 pt-3 border-t flex-shrink-0">
           <button onClick={handleSave} disabled={saving}
             className="w-full bg-violet-500 hover:bg-violet-600 text-white rounded-2xl py-3.5 text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
