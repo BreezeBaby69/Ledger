@@ -72,7 +72,7 @@ export default function TransactionEditModal({ transaction, categories, accounts
 
       {/* Sheet — fixed height with internal scroll */}
       <div className="relative w-full max-w-md bg-card rounded-t-3xl border-t border-x z-10 flex flex-col"
-        style={{ maxHeight: '90vh' }}>
+        style={{ maxHeight: '90vh' }} onTouchMove={e => e.stopPropagation()}>
 
         {/* Handle */}
         <div className="flex justify-center pt-3 pb-1 flex-shrink-0">
@@ -105,7 +105,7 @@ export default function TransactionEditModal({ transaction, categories, accounts
         </div>
 
         {/* Scrollable fields */}
-        <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4">
+        <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4" style={{ overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch' }}>
           <div>
             <label className="text-xs text-muted-foreground font-medium mb-1.5 block">Merchant</label>
             <input value={merchant} onChange={e => setMerchant(e.target.value)}
