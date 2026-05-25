@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { Transaction, Category, Account } from '@/lib/types'
 import { createClient } from '@/lib/supabase/client'
 import { formatCurrency, formatDate } from '@/lib/utils'
@@ -25,6 +25,24 @@ export default function TransactionEditModal({ transaction, categories, accounts
   const [saving, setSaving] = useState(false)
   const supabase = createClient()
 
+  // Lock body scroll on iOS when modal is open
+  useEffect(() => {
+    const originalStyle = window.getComputedStyle(document.body).overflow
+    const scrollY = window.scrollY
+    document.body.style.overflow = 'hidden'
+    document.body.style.position = 'fixed'
+    document.body.style.top = `-${scrollY}px`
+    document.body.style.width = '100%'
+
+    return () => {
+      document.body.style.overflow = originalStyle
+      document.body.style.position = ''
+      document.body.style.top = ''
+      document.body.style.width = ''
+      window.scrollTo(0, scrollY)
+    }
+  }, [])
+
   async function handleSave() {
     setSaving(true)
     await supabase.from('transactions').update({
@@ -36,7 +54,6 @@ export default function TransactionEditModal({ transaction, categories, accounts
       is_transfer: isTransfer,
     }).eq('id', transaction.id)
 
-    // Learn from correction — create/update merchant rule
     if (categoryId && categoryId !== transaction.category_id) {
       const { data: existing } = await supabase
         .from('merchant_rules')
@@ -70,21 +87,21 @@ export default function TransactionEditModal({ transaction, categories, accounts
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Sheet — fixed height with internal scroll */}
-      <div className="relative w-full max-w-md bg-card rounded-t-3xl border-t border-x z-10 flex flex-col"
-        style={{ maxHeight: '90vh' }} onTouchMove={e => e.stopPropagation()}>
-
+      {/* Sheet */}
+      <div
+        className="relative w-full max-w-md bg-card rounded-t-3xl border-t border-x z-10 flex flex-col"
+        style={{ maxHeight: '85vh' }}
+      >
         {/* Handle */}
         <div className="flex justify-center pt-3 pb-1 flex-shrink-0">
           <div className="w-10 h-1 bg-muted-foreground/30 rounded-full" />
         </div>
 
-        {/* Header — fixed */}
+        {/* Header */}
         <div className="flex items-center justify-between px-5 py-3 border-b flex-shrink-0">
           <h2 className="font-semibold">Edit Transaction</h2>
           <div className="flex gap-2">
-            <button onClick={handleDelete}
-              className="p-2 rounded-xl hover:bg-destructive/10 text-destructive transition-colors">
+            <button onClick={handleDelete} className="p-2 rounded-xl hover:bg-destructive/10 text-destructive transition-colors">
               <Trash2 size={16} />
             </button>
             <button onClick={onClose} className="p-2 rounded-xl hover:bg-muted transition-colors">
@@ -93,19 +110,19 @@ export default function TransactionEditModal({ transaction, categories, accounts
           </div>
         </div>
 
-        {/* Amount — fixed */}
+        {/* Amount */}
         <div className="px-5 py-4 border-b text-center flex-shrink-0">
-          <p className={cn(
-            'text-3xl font-semibold tabular-nums',
-            transaction.amount > 0 ? 'text-emerald-400' : 'text-foreground'
-          )}>
+          <p className={cn('text-3xl font-semibold tabular-nums', transaction.amount > 0 ? 'text-emerald-400' : 'text-foreground')}>
             {transaction.amount > 0 ? '+' : ''}{formatCurrency(transaction.amount)}
           </p>
           <p className="text-xs text-muted-foreground mt-1">{formatDate(date, 'MMMM d, yyyy')}</p>
         </div>
 
-        {/* Scrollable fields */}
-        <div className="overflow-y-auto flex-1 px-5 py-4 space-y-4" style={{ overscrollBehavior: 'contain', WebkitOverflowScrolling: 'touch' }}>
+        {/* Scrollable content */}
+        <div
+          className="flex-1 overflow-y-auto px-5 py-4 space-y-4"
+          style={{ WebkitOverflowScrolling: 'touch' }}
+        >
           <div>
             <label className="text-xs text-muted-foreground font-medium mb-1.5 block">Merchant</label>
             <input value={merchant} onChange={e => setMerchant(e.target.value)}
@@ -145,7 +162,6 @@ export default function TransactionEditModal({ transaction, categories, accounts
               className="w-full bg-muted/50 border rounded-xl px-3 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-violet-500/50" />
           </div>
 
-          {/* Transfer toggle */}
           <div className="flex items-center justify-between p-3 bg-muted/50 rounded-xl">
             <div>
               <p className="text-sm font-medium">Mark as Transfer</p>
@@ -159,12 +175,11 @@ export default function TransactionEditModal({ transaction, categories, accounts
             </button>
           </div>
 
-          {/* Extra padding so save button doesn't overlap last field */}
           <div className="h-2" />
         </div>
 
-        {/* Save button — fixed at bottom */}
-        <div className="px-5 pb-6 pt-3 border-t flex-shrink-0">
+        {/* Save button */}
+        <div className="px-5 pb-8 pt-3 border-t flex-shrink-0">
           <button onClick={handleSave} disabled={saving}
             className="w-full bg-violet-500 hover:bg-violet-600 text-white rounded-2xl py-3.5 text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
             {saving ? 'Saving...' : <><Check size={16} /> Save Changes</>}
