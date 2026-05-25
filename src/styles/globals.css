@@ -161,3 +161,5 @@ body {
   font-size: 12px;
   font-weight: 500;
 }
+/* Prevent scroll bleed on iOS modals */
+.modal-open { overflow: hidden; touch-action: none; }
