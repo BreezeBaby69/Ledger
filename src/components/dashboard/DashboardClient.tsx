@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { MonthlyStats, Budget, Account, Transaction } from '@/lib/types'
-import { formatCurrency, formatDate, getCurrentMonth, getPreviousMonths } from '@/lib/utils'
+import { formatCurrency, getCurrentMonth } from '@/lib/utils'
 import SpendingRing from './SpendingRing'
 import BudgetCard from './BudgetCard'
 import RecentTransactions from './RecentTransactions'
@@ -22,18 +22,14 @@ export default function DashboardClient({ month: initialMonth }: { month: string
   const [loading, setLoading] = useState(true)
   const supabase = createClient()
 
-  useEffect(() => {
-    loadData()
-  }, [month])
+  useEffect(() => { loadData() }, [month])
 
   async function loadData() {
     setLoading(true)
     try {
-      // Load accounts
       const { data: accs } = await supabase.from('accounts').select('*').order('created_at')
       setAccounts(accs || [])
 
-      // Load transactions for month
       const start = month + '-01'
       const end = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0)
         .toISOString().split('T')[0]
@@ -46,18 +42,22 @@ export default function DashboardClient({ month: initialMonth }: { month: string
         .order('date', { ascending: false })
 
       const allTxns = txns || []
-      const expenses = allTxns.filter(t => t.amount < 0 && !t.is_transfer)
-      const income = allTxns.filter(t => t.amount > 0 && !t.is_transfer)
 
-      // Build stats
+      // Expenses = negative amounts that are NOT transfers
+      const expenses = allTxns.filter((t: any) => t.amount < 0 && !t.is_transfer)
+
+      // Income = positive amounts that are NOT transfers
+      const income = allTxns.filter((t: any) => t.amount > 0 && !t.is_transfer)
+
+      // Build category breakdown from expenses
       const byCategory: Record<string, MonthlyStats['by_category'][0]> = {}
       for (const t of expenses) {
         const catId = t.category_id || 'uncategorized'
         if (!byCategory[catId]) {
           byCategory[catId] = {
             category_id: catId,
-            category_name: t.category?.name || 'Uncategorized',
-            category_color: t.category?.color || '#94a3b8',
+            category_name: (t.category as any)?.name || 'Uncategorized',
+            category_color: (t.category as any)?.color || '#94a3b8',
             amount: 0,
             transaction_count: 0,
           }
@@ -66,17 +66,20 @@ export default function DashboardClient({ month: initialMonth }: { month: string
         byCategory[catId].transaction_count++
       }
 
+      const totalIncome = income.reduce((s: number, t: any) => s + t.amount, 0)
+      const totalSpent = expenses.reduce((s: number, t: any) => s + Math.abs(t.amount), 0)
+
       setStats({
         month,
-        total_spent: expenses.reduce((s, t) => s + Math.abs(t.amount), 0),
-        total_income: income.reduce((s, t) => s + t.amount, 0),
-        net: allTxns.reduce((s, t) => s + t.amount, 0),
+        total_spent: totalSpent,
+        total_income: totalIncome,
+        net: totalIncome - totalSpent,
         by_category: Object.values(byCategory).sort((a, b) => b.amount - a.amount),
       })
 
       setRecentTxns(allTxns.slice(0, 8))
 
-      // Load budgets
+      // Load budgets with spent amounts
       const { data: bdgs } = await supabase
         .from('budgets')
         .select('*, category:categories(*)')
@@ -89,7 +92,7 @@ export default function DashboardClient({ month: initialMonth }: { month: string
         }
       }
 
-      setBudgets((bdgs || []).map(b => ({ ...b, spent: spentByCategory[b.category_id] || 0 })))
+      setBudgets((bdgs || []).map((b: any) => ({ ...b, spent: spentByCategory[b.category_id] || 0 })))
     } catch (err) {
       console.error(err)
     } finally {
@@ -110,9 +113,14 @@ export default function DashboardClient({ month: initialMonth }: { month: string
 
   const isCurrentMonth = month === getCurrentMonth()
   const monthLabel = format(parseISO(month + '-01'), 'MMMM yyyy')
+
+  // Net worth = sum of all account balances (credit cards subtract)
   const totalBalance = accounts.reduce((s, a) => {
     return a.type === 'credit_card' ? s - a.balance : s + a.balance
   }, 0)
+
+  // Net for the month = income - expenses
+  const monthNet = (stats?.total_income || 0) - (stats?.total_spent || 0)
 
   if (loading) return <DashboardSkeleton />
 
@@ -124,27 +132,32 @@ export default function DashboardClient({ month: initialMonth }: { month: string
           <ChevronLeft size={18} className="text-muted-foreground" />
         </button>
         <span className="font-medium text-sm">{monthLabel}</span>
-        <button
-          onClick={nextMonth}
-          disabled={isCurrentMonth}
-          className="p-2 rounded-xl hover:bg-muted transition-colors disabled:opacity-30"
-        >
+        <button onClick={nextMonth} disabled={isCurrentMonth}
+          className="p-2 rounded-xl hover:bg-muted transition-colors disabled:opacity-30">
           <ChevronRight size={18} className="text-muted-foreground" />
         </button>
       </div>
 
-      {/* Net Worth Hero Card */}
+      {/* Hero Card */}
       <div className="rounded-2xl p-5 relative overflow-hidden" style={{
         background: 'linear-gradient(135deg, #1e0a4a 0%, #2d1065 50%, #1a1040 100%)'
       }}>
         <div className="absolute inset-0 opacity-20"
-          style={{ backgroundImage: 'radial-gradient(circle at 70% 30%, #8b5cf6 0%, transparent 60%)' }}
-        />
+          style={{ backgroundImage: 'radial-gradient(circle at 70% 30%, #8b5cf6 0%, transparent 60%)' }} />
         <div className="relative">
-          <p className="text-violet-300 text-xs font-medium uppercase tracking-wider mb-1">Net Worth</p>
-          <p className="text-3xl font-semibold tabular-nums text-white mb-4">
-            {formatCurrency(totalBalance)}
+          <p className="text-violet-300 text-xs font-medium uppercase tracking-wider mb-1">
+            {isCurrentMonth ? 'This Month' : monthLabel}
           </p>
+          <div className="flex items-end justify-between mb-4">
+            <div>
+              <p className="text-3xl font-semibold tabular-nums text-white">
+                {monthNet >= 0 ? '+' : ''}{formatCurrency(monthNet)}
+              </p>
+              <p className="text-violet-300 text-xs mt-0.5">
+                {monthNet >= 0 ? 'ahead this month' : 'over income this month'}
+              </p>
+            </div>
+          </div>
           <div className="flex gap-6">
             <div>
               <div className="flex items-center gap-1 text-emerald-400 mb-0.5">
@@ -168,7 +181,7 @@ export default function DashboardClient({ month: initialMonth }: { month: string
         </div>
       </div>
 
-      {/* Spending Ring + Top Categories */}
+      {/* Spending Ring */}
       {stats && stats.total_spent > 0 && (
         <SpendingRing stats={stats} budgets={budgets} />
       )}
@@ -193,9 +206,7 @@ export default function DashboardClient({ month: initialMonth }: { month: string
       {/* Recent Transactions */}
       <div>
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-            Recent
-          </h2>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Recent</h2>
           <a href="/transactions" className="text-xs text-violet-400 font-medium">See all</a>
         </div>
         <RecentTransactions transactions={recentTxns} />
