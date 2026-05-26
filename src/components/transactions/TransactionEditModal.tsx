@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { Transaction, Category, Account } from '@/lib/types'
 import { createClient } from '@/lib/supabase/client'
 import { formatCurrency, formatDate } from '@/lib/utils'
@@ -21,11 +21,21 @@ export default function TransactionEditModal({ transaction, categories, accounts
   const [accountId, setAccountId] = useState(transaction.account_id)
   const [date, setDate] = useState(transaction.date)
   const [notes, setNotes] = useState(transaction.notes || '')
-  const [isTransfer, setIsTransfer] = useState(transaction.is_transfer)
+  const [isTransfer, setIsTransfer] = useState(!!transaction.is_transfer)
   const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  
+  // Use a ref to always have the latest isTransfer value at save time
+  const isTransferRef = useRef(!!transaction.is_transfer)
+
+  function toggleTransfer() {
+    const newVal = !isTransferRef.current
+    isTransferRef.current = newVal
+    setIsTransfer(newVal)
+  }
+
   const supabase = createClient()
 
-  // Lock body scroll on iOS when modal is open
   useEffect(() => {
     const scrollY = window.scrollY
     document.body.style.overflow = 'hidden'
@@ -43,53 +53,51 @@ export default function TransactionEditModal({ transaction, categories, accounts
 
   async function handleSave() {
     setSaving(true)
-    try {
-      // Save transaction — capture current state values directly
-      const { error } = await supabase.from('transactions').update({
-        merchant,
-        category_id: categoryId || null,
-        account_id: accountId,
-        date,
-        notes: notes || null,
-        is_transfer: isTransfer,
-      }).eq('id', transaction.id)
-
-      if (error) {
-        console.error('Save error:', error)
-        alert('Failed to save: ' + error.message)
-        setSaving(false)
-        return
-      }
-
-      // Learn from category correction (don't let this block the save)
-      if (categoryId && categoryId !== transaction.category_id) {
-        try {
-          const { data: existing } = await supabase
-            .from('merchant_rules')
-            .select('id')
-            .eq('merchant_pattern', merchant)
-            .maybeSingle() // use maybeSingle instead of single — won't throw if not found
-
-          if (existing) {
-            await supabase.from('merchant_rules').update({ category_id: categoryId }).eq('id', existing.id)
-          } else {
-            await supabase.from('merchant_rules').insert({
-              merchant_pattern: merchant,
-              category_id: categoryId,
-              match_type: 'contains',
-            })
-          }
-        } catch {
-          // Don't fail the save if rule creation fails
-        }
-      }
-
-      onSave()
-    } catch (err: any) {
-      alert('Error: ' + err.message)
-    } finally {
-      setSaving(false)
+    
+    const updatePayload = {
+      merchant,
+      category_id: categoryId || null,
+      account_id: accountId,
+      date,
+      notes: notes || null,
+      is_transfer: isTransferRef.current, // use ref, not state
     }
+
+    const { error } = await supabase
+      .from('transactions')
+      .update(updatePayload)
+      .eq('id', transaction.id)
+
+    if (error) {
+      alert('Failed to save: ' + error.message)
+      setSaving(false)
+      return
+    }
+
+    // Learn from category correction
+    if (categoryId && categoryId !== transaction.category_id) {
+      try {
+        const { data: existing } = await supabase
+          .from('merchant_rules')
+          .select('id')
+          .eq('merchant_pattern', merchant)
+          .maybeSingle()
+
+        if (existing) {
+          await supabase.from('merchant_rules').update({ category_id: categoryId }).eq('id', existing.id)
+        } else {
+          await supabase.from('merchant_rules').insert({
+            merchant_pattern: merchant,
+            category_id: categoryId,
+            match_type: 'contains',
+          })
+        }
+      } catch {}
+    }
+
+    setSaving(false)
+    setSaved(true)
+    setTimeout(() => onSave(), 800)
   }
 
   async function handleDelete() {
@@ -102,10 +110,7 @@ export default function TransactionEditModal({ transaction, categories, accounts
     <div className="fixed inset-0 z-50 flex items-end justify-center">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
 
-      <div
-        className="relative w-full max-w-md bg-card rounded-t-3xl border-t border-x z-10 flex flex-col"
-        style={{ maxHeight: '85vh' }}
-      >
+      <div className="relative w-full max-w-md bg-card rounded-t-3xl border-t border-x z-10 flex flex-col" style={{ maxHeight: '85vh' }}>
         <div className="flex justify-center pt-3 pb-1 flex-shrink-0">
           <div className="w-10 h-1 bg-muted-foreground/30 rounded-full" />
         </div>
@@ -169,29 +174,50 @@ export default function TransactionEditModal({ transaction, categories, accounts
               className="w-full bg-muted/50 border rounded-xl px-3 py-2.5 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-violet-500/50" />
           </div>
 
-          {/* Transfer toggle */}
-          <div
-            className="flex items-center justify-between p-3 bg-muted/50 rounded-xl cursor-pointer"
-            onClick={() => setIsTransfer(prev => !prev)}
-          >
-            <div>
-              <p className="text-sm font-medium">Mark as Transfer</p>
-              <p className="text-xs text-muted-foreground">Exclude from spending & income totals</p>
-            </div>
-            <div className={cn('w-11 h-6 rounded-full transition-all duration-200 relative flex-shrink-0 ml-4',
-              isTransfer ? 'bg-violet-500' : 'bg-muted-foreground/30')}>
-              <div className={cn('absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all duration-200',
-                isTransfer ? 'left-5' : 'left-0.5')} />
+          {/* Transfer toggle — shows current value clearly */}
+          <div className="rounded-xl border overflow-hidden">
+            <div
+              className={cn(
+                'flex items-center justify-between p-4 cursor-pointer transition-colors',
+                isTransfer ? 'bg-violet-500/15 border-violet-500/30' : 'bg-muted/50'
+              )}
+              onClick={toggleTransfer}
+            >
+              <div>
+                <p className="text-sm font-medium">
+                  {isTransfer ? '✓ Marked as Transfer' : 'Mark as Transfer'}
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {isTransfer
+                    ? 'Excluded from spending & income'
+                    : 'Tap to exclude from totals'}
+                </p>
+              </div>
+              <div className={cn(
+                'w-12 h-7 rounded-full transition-all duration-200 relative flex-shrink-0 ml-4',
+                isTransfer ? 'bg-violet-500' : 'bg-muted-foreground/30'
+              )}>
+                <div className={cn(
+                  'absolute top-1 w-5 h-5 bg-white rounded-full shadow transition-all duration-200',
+                  isTransfer ? 'left-6' : 'left-1'
+                )} />
+              </div>
             </div>
           </div>
 
           <div className="h-2" />
         </div>
 
-        <div className="px-5 pb-8 pt-3 border-t flex-shrink-0">
-          <button onClick={handleSave} disabled={saving}
-            className="w-full bg-violet-500 hover:bg-violet-600 text-white rounded-2xl py-3.5 text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
-            {saving ? 'Saving...' : <><Check size={16} /> Save Changes</>}
+        <div className="px-5 pt-3 border-t flex-shrink-0" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 80px)" }}>
+          <button
+            onClick={handleSave}
+            disabled={saving || saved}
+            className={cn(
+              'w-full text-white rounded-2xl py-3.5 text-sm font-semibold transition-all flex items-center justify-center gap-2',
+              saved ? 'bg-emerald-500' : 'bg-violet-500 hover:bg-violet-600 disabled:opacity-50'
+            )}
+          >
+            {saved ? <><Check size={16} /> Saved!</> : saving ? 'Saving...' : <><Check size={16} /> Save Changes</>}
           </button>
         </div>
       </div>
