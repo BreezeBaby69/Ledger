@@ -122,7 +122,7 @@ export default function AnalyticsPage() {
     }
 
     const { data } = await query
-    setDrillTxns((data || []) as DrillTxn[])
+    setDrillTxns((data || []) as any[])
     setDrillLoading(false)
   }
 
