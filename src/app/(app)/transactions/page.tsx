@@ -1,14 +1,43 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { Transaction, Category, Account } from '@/lib/types'
 import { formatCurrency, formatDate } from '@/lib/utils'
-import { Search, Filter, X, ChevronDown } from 'lucide-react'
+import { Search, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import TransactionEditModal from '@/components/transactions/TransactionEditModal'
 import { getCurrentMonth } from '@/lib/utils'
-import { format, parseISO, subMonths } from 'date-fns'
+import { format, subMonths, startOfYear } from 'date-fns'
+
+// Date range option type
+type DateRange =
+  | { type: 'month'; value: string }       // YYYY-MM
+  | { type: 'last3' }
+  | { type: 'last6' }
+  | { type: 'ytd' }
+  | { type: 'all' }
+
+function getDateBounds(range: DateRange): { start: string; end: string } | null {
+  const today = new Date()
+  const todayStr = format(today, 'yyyy-MM-dd')
+
+  switch (range.type) {
+    case 'month': {
+      const [year, mon] = range.value.split('-').map(Number)
+      const end = new Date(year, mon, 0).toISOString().split('T')[0]
+      return { start: `${range.value}-01`, end }
+    }
+    case 'last3':
+      return { start: format(subMonths(today, 3), 'yyyy-MM-dd'), end: todayStr }
+    case 'last6':
+      return { start: format(subMonths(today, 6), 'yyyy-MM-dd'), end: todayStr }
+    case 'ytd':
+      return { start: format(startOfYear(today), 'yyyy-MM-dd'), end: todayStr }
+    case 'all':
+      return null // no date filter
+  }
+}
 
 export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([])
@@ -17,18 +46,13 @@ export default function TransactionsPage() {
   const [search, setSearch] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string>('')
   const [selectedAccount, setSelectedAccount] = useState<string>('')
-  const [month, setMonth] = useState(getCurrentMonth())
+  const [dateRange, setDateRange] = useState<DateRange>({ type: 'month', value: getCurrentMonth() })
   const [loading, setLoading] = useState(true)
   const [selectedTxn, setSelectedTxn] = useState<Transaction | null>(null)
   const supabase = createClient()
 
-  useEffect(() => {
-    loadMeta()
-  }, [])
-
-  useEffect(() => {
-    loadTransactions()
-  }, [search, selectedCategory, selectedAccount, month])
+  useEffect(() => { loadMeta() }, [])
+  useEffect(() => { loadTransactions() }, [search, selectedCategory, selectedAccount, dateRange])
 
   async function loadMeta() {
     const [{ data: cats }, { data: accs }] = await Promise.all([
@@ -41,18 +65,17 @@ export default function TransactionsPage() {
 
   async function loadTransactions() {
     setLoading(true)
-    const start = month + '-01'
-    const end = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0)
-      .toISOString().split('T')[0]
+    const bounds = getDateBounds(dateRange)
 
     let query = supabase
       .from('transactions')
       .select('*, category:categories(*), account:accounts(*)')
-      .gte('date', start)
-      .lte('date', end)
       .order('date', { ascending: false })
       .order('created_at', { ascending: false })
 
+    if (bounds) {
+      query = query.gte('date', bounds.start).lte('date', bounds.end)
+    }
     if (search) query = query.ilike('merchant', `%${search}%`)
     if (selectedCategory) query = query.eq('category_id', selectedCategory)
     if (selectedAccount) query = query.eq('account_id', selectedAccount)
@@ -70,10 +93,36 @@ export default function TransactionsPage() {
   }
   const dateGroups = Object.entries(grouped).sort(([a], [b]) => b.localeCompare(a))
 
-  const months = Array.from({ length: 6 }, (_, i) => {
+  // Build month options (last 24 months)
+  const monthOptions = Array.from({ length: 24 }, (_, i) => {
     const d = subMonths(new Date(), i)
     return { value: format(d, 'yyyy-MM'), label: format(d, 'MMM yyyy') }
   })
+
+  // Date range select value
+  function getSelectValue(): string {
+    if (dateRange.type === 'month') return `month:${dateRange.value}`
+    return dateRange.type
+  }
+
+  function handleDateChange(val: string) {
+    if (val === 'last3') setDateRange({ type: 'last3' })
+    else if (val === 'last6') setDateRange({ type: 'last6' })
+    else if (val === 'ytd') setDateRange({ type: 'ytd' })
+    else if (val === 'all') setDateRange({ type: 'all' })
+    else setDateRange({ type: 'month', value: val.replace('month:', '') })
+  }
+
+  // Date range label for summary
+  function getDateLabel(): string {
+    switch (dateRange.type) {
+      case 'month': return format(new Date(dateRange.value + '-01'), 'MMMM yyyy')
+      case 'last3': return 'Last 3 Months'
+      case 'last6': return 'Last 6 Months'
+      case 'ytd': return 'Year to Date'
+      case 'all': return 'All Time'
+    }
+  }
 
   return (
     <div className="space-y-4 page-transition">
@@ -96,16 +145,26 @@ export default function TransactionsPage() {
 
       {/* Filters */}
       <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+        {/* Date range selector */}
         <select
-          value={month}
-          onChange={e => setMonth(e.target.value)}
+          value={getSelectValue()}
+          onChange={e => handleDateChange(e.target.value)}
           className="bg-card border rounded-xl px-3 py-2 text-xs font-medium focus:outline-none flex-shrink-0"
         >
-          {months.map(m => (
-            <option key={m.value} value={m.value}>{m.label}</option>
-          ))}
+          <optgroup label="Quick Ranges">
+            <option value="last3">Last 3 Months</option>
+            <option value="last6">Last 6 Months</option>
+            <option value="ytd">Year to Date</option>
+            <option value="all">All Time</option>
+          </optgroup>
+          <optgroup label="By Month">
+            {monthOptions.map(m => (
+              <option key={m.value} value={`month:${m.value}`}>{m.label}</option>
+            ))}
+          </optgroup>
         </select>
 
+        {/* Category filter */}
         <select
           value={selectedCategory}
           onChange={e => setSelectedCategory(e.target.value)}
@@ -113,10 +172,11 @@ export default function TransactionsPage() {
         >
           <option value="">All categories</option>
           {categories.map(c => (
-            <option key={c.id} value={c.id}>{c.name}</option>
+            <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
           ))}
         </select>
 
+        {/* Account filter */}
         <select
           value={selectedAccount}
           onChange={e => setSelectedAccount(e.target.value)}
@@ -132,13 +192,13 @@ export default function TransactionsPage() {
       {/* Summary */}
       <div className="flex gap-3">
         {[
-          { label: 'Transactions', value: transactions.length.toString() },
+          { label: getDateLabel(), value: `${transactions.length} transactions` },
           { label: 'Spent', value: formatCurrency(transactions.filter(t => t.amount < 0 && !t.is_transfer).reduce((s, t) => s + Math.abs(t.amount), 0)) },
           { label: 'Income', value: formatCurrency(transactions.filter(t => t.amount > 0 && !t.is_transfer).reduce((s, t) => s + t.amount, 0)) },
         ].map(stat => (
-          <div key={stat.label} className="flex-1 bg-card border rounded-xl p-3 text-center">
-            <p className="text-xs text-muted-foreground">{stat.label}</p>
-            <p className="text-sm font-semibold tabular-nums mt-0.5">{stat.value}</p>
+          <div key={stat.label} className="flex-1 bg-card border rounded-xl p-3 text-center min-w-0">
+            <p className="text-xs text-muted-foreground truncate">{stat.label}</p>
+            <p className="text-sm font-semibold tabular-nums mt-0.5 truncate">{stat.value}</p>
           </div>
         ))}
       </div>
@@ -157,7 +217,7 @@ export default function TransactionsPage() {
           {dateGroups.map(([date, txns]) => (
             <div key={date}>
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                {formatDate(date, 'EEEE, MMMM d')}
+                {formatDate(date, 'EEEE, MMMM d, yyyy')}
               </p>
               <div className="bg-card rounded-2xl border overflow-hidden">
                 {txns.map((txn, i) => (
@@ -171,22 +231,19 @@ export default function TransactionsPage() {
                   >
                     <div
                       className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 text-base"
-                      style={{ backgroundColor: (txn.category?.color || '#94a3b8') + '22' }}
+                      style={{ backgroundColor: ((txn.category as any)?.color || '#94a3b8') + '22' }}
                     >
-                      {txn.category?.icon || '📦'}
+                      {(txn.category as any)?.icon || '📦'}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium truncate">{txn.merchant}</p>
                       <p className="text-xs text-muted-foreground">
-                        {txn.category?.name || 'Uncategorized'}
+                        {(txn.category as any)?.name || 'Uncategorized'}
                         {txn.is_transfer && ' · Transfer'}
                         {txn.is_recurring && ' · Recurring'}
                       </p>
                     </div>
-                    <span className={cn(
-                      'text-sm font-medium tabular-nums',
-                      txn.amount > 0 ? 'text-emerald-400' : ''
-                    )}>
+                    <span className={cn('text-sm font-medium tabular-nums flex-shrink-0', txn.amount > 0 ? 'text-emerald-400' : '')}>
                       {txn.amount > 0 ? '+' : ''}{formatCurrency(txn.amount)}
                     </span>
                   </button>
@@ -197,7 +254,6 @@ export default function TransactionsPage() {
         </div>
       )}
 
-      {/* Edit modal */}
       {selectedTxn && (
         <TransactionEditModal
           transaction={selectedTxn}
