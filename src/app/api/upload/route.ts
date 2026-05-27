@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/server'
-import { isTransferLike } from '@/lib/utils'
 
 const GEMINI_MODEL = 'gemini-2.5-flash'
 
@@ -24,22 +23,26 @@ export async function POST(req: NextRequest) {
     const mimeType = file.type || 'application/pdf'
 
     const supabase = createAdminClient()
-    const [{ data: rules }, { data: categories }] = await Promise.all([
+    const [{ data: rules }, { data: categories }, { data: existing }] = await Promise.all([
       supabase.from('merchant_rules').select('*, category:categories(*)'),
       supabase.from('categories').select('id, name, icon').order('name'),
+      // Load existing transactions for duplicate detection
+      supabase.from('transactions').select('date, merchant, amount').eq('account_id', accountId),
     ])
+
+    const categoryList = (categories || []).map((c: any) => `${c.id}: ${c.icon} ${c.name}`).join('\n')
 
     const prompt = `Extract all transactions from this Canadian bank or credit card statement.
 
 Return a JSON array. Each item has:
 - date: "YYYY-MM-DD"
-- merchant: clean name
-- amount: negative for purchases, positive for payments
-- is_transfer: true for payments only
+- merchant: clean name (e.g. "INTERAC e-Transfer Received", "Government of Alberta MSP", "Tim Hortons")
+- amount: negative for purchases/debits, positive for deposits/credits
+- confidence: 0.9
 
-Example: [{"date":"2026-04-24","merchant":"Payment Thank You","amount":879.68,"is_transfer":true},{"date":"2026-04-10","merchant":"Costco","amount":-142.55,"is_transfer":false}]
+Do NOT set any transfer flags — just extract the raw transactions exactly as they appear.
 
-Return ONLY the JSON array.`
+Return ONLY the raw JSON array starting with [ and ending with ].`
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`
 
@@ -72,7 +75,6 @@ Return ONLY the JSON array.`
       return NextResponse.json({ error: 'Empty response from AI' }, { status: 500 })
     }
 
-    // Strip ALL non-JSON content — keep only what's between the first [ and last ]
     const firstBracket = rawText.indexOf('[')
     const lastBracket = rawText.lastIndexOf(']')
 
@@ -83,21 +85,26 @@ Return ONLY the JSON array.`
       )
     }
 
-    const jsonStr = rawText.substring(firstBracket, lastBracket + 1)
-
     let extracted: any[] = []
     try {
-      extracted = JSON.parse(jsonStr)
+      extracted = JSON.parse(rawText.substring(firstBracket, lastBracket + 1))
       if (!Array.isArray(extracted)) extracted = []
     } catch (e: any) {
       return NextResponse.json(
-        { error: `JSON parse error: ${e.message}. Data: ${jsonStr.substring(0, 200)}` },
+        { error: `Parse error: ${e.message}` },
         { status: 500 }
       )
     }
 
-    // Get category IDs by name for auto-categorization
+    // Build duplicate set from existing transactions
+    const existingSet = new Set(
+      (existing || []).map((t: any) => `${t.date}|${t.merchant}|${t.amount}`)
+    )
+
+    // Build category lookup by name
     const catByName = new Map((categories || []).map((c: any) => [c.name.toLowerCase(), c.id]))
+
+    // Apply merchant rules
     const ruleMap = new Map((rules || []).map((r: any) => [r.merchant_pattern.toLowerCase(), r]))
 
     const transactions = extracted.map((t: any) => {
@@ -116,7 +123,7 @@ Return ONLY the JSON array.`
       if (!categoryId) {
         if (/costco|walmart|safeway|superstore|sobeys|loblaws|iga|freshco|no frills/i.test(merchantLower)) {
           categoryId = catByName.get('groceries') || null
-        } else if (/tim horton|mcdonald|starbucks|subway|a&w|burger|pizza|restaurant|cafe|sushi|chipotle|firehouse|italian centre/i.test(merchantLower)) {
+        } else if (/tim horton|mcdonald|starbucks|subway|a&w|burger|pizza|restaurant|cafe|sushi|chipotle|firehouse|italian centre|earls|boston pizza/i.test(merchantLower)) {
           categoryId = catByName.get('restaurants') || null
         } else if (/shell|esso|petro|husky|pioneer|costco gas|hughes/i.test(merchantLower)) {
           categoryId = catByName.get('gas') || null
@@ -126,12 +133,20 @@ Return ONLY the JSON array.`
           categoryId = catByName.get('utilities') || null
         } else if (/best buy|amazon|ikea|home depot|canadian tire|sport chek|old navy|winners|chapters/i.test(merchantLower)) {
           categoryId = catByName.get('shopping') || null
-        } else if (/cineplex|ticketmaster|live bowld|golf|landmark/i.test(merchantLower)) {
+        } else if (/cineplex|ticketmaster|live bowl|golf|landmark/i.test(merchantLower)) {
           categoryId = catByName.get('entertainment') || null
         } else if (/crunch|goodlife|equinox|ymca/i.test(merchantLower)) {
           categoryId = catByName.get('subscriptions') || null
+        } else if (/government|alberta|canada|cra|employment insurance|ei payment/i.test(merchantLower)) {
+          categoryId = catByName.get('income') || null
+        } else if (t.amount > 0 && /interac|e-transfer received|deposit/i.test(merchantLower)) {
+          categoryId = catByName.get('income') || null
         }
       }
+
+      // Only flag as duplicate if exact match exists in database
+      const key = `${t.date}|${t.merchant}|${t.amount}`
+      const isDuplicate = existingSet.has(key)
 
       return {
         id: crypto.randomUUID(),
@@ -139,10 +154,10 @@ Return ONLY the JSON array.`
         merchant: t.merchant || 'Unknown',
         amount: typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount)) || 0,
         suggested_category_id: categoryId,
-        is_transfer_candidate: t.is_transfer || isTransferLike(t.merchant || ''),
-        is_duplicate_candidate: false,
-        status: 'pending',
-        confidence: 0.9,
+        is_transfer_candidate: false,      // Never auto-flag as transfer
+        is_duplicate_candidate: isDuplicate, // Only flag real duplicates
+        status: isDuplicate ? 'pending' : 'approved',
+        confidence: t.confidence ?? 0.9,
       }
     })
 
