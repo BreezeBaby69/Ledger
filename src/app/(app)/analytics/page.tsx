@@ -17,25 +17,16 @@ interface CategoryData {
   transaction_count: number
 }
 
-interface DrillTxn {
-  id: string
-  date: string
-  merchant: string
-  amount: number
-  category: { name: string; color: string; icon: string } | null
-}
-
 export default function AnalyticsPage() {
   const [month, setMonth] = useState(getCurrentMonth())
   const [categoryData, setCategoryData] = useState<CategoryData[]>([])
   const [trendData, setTrendData] = useState<any[]>([])
   const [recurringData, setRecurringData] = useState<any[]>([])
+  const [dismissedMerchants, setDismissedMerchants] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [view, setView] = useState<'spending' | 'trends' | 'recurring'>('spending')
-  
-  // Drill-down state
   const [drillCategory, setDrillCategory] = useState<CategoryData | null>(null)
-  const [drillTxns, setDrillTxns] = useState<DrillTxn[]>([])
+  const [drillTxns, setDrillTxns] = useState<any[]>([])
   const [drillLoading, setDrillLoading] = useState(false)
 
   const supabase = createClient()
@@ -47,6 +38,7 @@ export default function AnalyticsPage() {
     const start = month + '-01'
     const end = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0).toISOString().split('T')[0]
 
+    // Category spending
     const { data: txns } = await supabase
       .from('transactions')
       .select('amount, category_id, category:categories(id, name, color, icon)')
@@ -57,10 +49,14 @@ export default function AnalyticsPage() {
     for (const t of txns || []) {
       const cat = t.category as any
       const id = t.category_id || 'uncategorized'
-      const name = cat?.name || 'Uncategorized'
-      const color = cat?.color || '#94a3b8'
-      const icon = cat?.icon || '📦'
-      if (!catMap[id]) catMap[id] = { category_id: id, name, color, icon, amount: 0, transaction_count: 0 }
+      if (!catMap[id]) catMap[id] = {
+        category_id: id,
+        name: cat?.name || 'Uncategorized',
+        color: cat?.color || '#94a3b8',
+        icon: cat?.icon || '📦',
+        amount: 0,
+        transaction_count: 0,
+      }
       catMap[id].amount += Math.abs(t.amount)
       catMap[id].transaction_count++
     }
@@ -82,37 +78,54 @@ export default function AnalyticsPage() {
     }))
     setTrendData(trend)
 
-    // Recurring
+    // Load dismissed merchants
+    const { data: dismissed } = await supabase.from('dismissed_recurring').select('merchant')
+    const dismissedSet = new Set((dismissed || []).map((d: any) => d.merchant))
+    setDismissedMerchants(dismissedSet)
+
+    // Recurring — deduplicated by merchant, excluding dismissed
     const { data: recTxns } = await supabase
       .from('transactions')
       .select('merchant, amount, category:categories(name, color, icon)')
-      .eq('is_recurring', true).lt('amount', 0)
-      .order('amount', { ascending: true })
+      .eq('is_recurring', true)
+      .eq('is_transfer', false)
+      .lt('amount', 0)
 
-    const recMap: Record<string, any> = {}
+    // Deduplicate by merchant name — take the most common amount
+    const recMap: Record<string, { merchant: string; amount: number; category: any; count: number }> = {}
     for (const t of recTxns || []) {
-      const key = `${t.merchant}|${t.amount}`
-      if (!recMap[key]) recMap[key] = { merchant: t.merchant, amount: Math.abs(t.amount), category: t.category }
+      if (dismissedSet.has(t.merchant)) continue
+      const key = t.merchant
+      if (!recMap[key]) {
+        recMap[key] = { merchant: t.merchant, amount: Math.abs(t.amount), category: t.category, count: 1 }
+      } else {
+        recMap[key].count++
+        // Use median amount
+        recMap[key].amount = Math.abs(t.amount)
+      }
     }
-    setRecurringData(Object.values(recMap).sort((a, b) => b.amount - a.amount))
 
+    setRecurringData(Object.values(recMap).sort((a, b) => b.amount - a.amount))
     setLoading(false)
+  }
+
+  async function dismissRecurring(merchant: string) {
+    await supabase.from('dismissed_recurring').insert({ merchant })
+    setDismissedMerchants(prev => new Set([...prev, merchant]))
+    setRecurringData(prev => prev.filter(r => r.merchant !== merchant))
   }
 
   async function openDrillDown(cat: CategoryData) {
     setDrillCategory(cat)
     setDrillLoading(true)
-
     const start = month + '-01'
     const end = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0).toISOString().split('T')[0]
 
     let query = supabase
       .from('transactions')
       .select('id, date, merchant, amount, category:categories(name, color, icon)')
-      .gte('date', start)
-      .lte('date', end)
-      .eq('is_transfer', false)
-      .lt('amount', 0)
+      .gte('date', start).lte('date', end)
+      .eq('is_transfer', false).lt('amount', 0)
       .order('date', { ascending: false })
 
     if (cat.category_id === 'uncategorized') {
@@ -122,7 +135,7 @@ export default function AnalyticsPage() {
     }
 
     const { data } = await query
-    setDrillTxns((data || []) as any[])
+    setDrillTxns(data || [])
     setDrillLoading(false)
   }
 
@@ -154,11 +167,10 @@ export default function AnalyticsPage() {
     )
   }
 
-  // Drill-down modal
+  // Drill-down view
   if (drillCategory) {
     return (
       <div className="space-y-4 page-transition">
-        {/* Header */}
         <div className="flex items-center gap-3">
           <button onClick={closeDrillDown} className="p-2 rounded-xl hover:bg-muted transition-colors">
             <ArrowLeft size={18} className="text-muted-foreground" />
@@ -176,7 +188,6 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        {/* Summary bar */}
         <div className="bg-card rounded-2xl border p-4">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs text-muted-foreground">% of total spending</span>
@@ -190,7 +201,6 @@ export default function AnalyticsPage() {
           </div>
         </div>
 
-        {/* Transactions */}
         {drillLoading ? (
           <div className="space-y-2">{[...Array(4)].map((_, i) => <div key={i} className="h-16 rounded-xl shimmer" />)}</div>
         ) : drillTxns.length === 0 ? (
@@ -203,20 +213,16 @@ export default function AnalyticsPage() {
                   <p className="text-sm font-medium truncate">{txn.merchant}</p>
                   <p className="text-xs text-muted-foreground">{formatDate(txn.date, 'EEEE, MMMM d')}</p>
                 </div>
-                <span className="text-sm font-medium tabular-nums flex-shrink-0">
-                  {formatCurrency(txn.amount)}
-                </span>
+                <span className="text-sm font-medium tabular-nums">{formatCurrency(txn.amount)}</span>
               </div>
             ))}
           </div>
         )}
 
-        {/* Total */}
         <div className="bg-card rounded-2xl border p-4 flex items-center justify-between">
           <span className="text-sm font-medium">Total</span>
           <span className="text-sm font-semibold tabular-nums">{formatCurrency(drillCategory.amount)}</span>
         </div>
-
         <div className="h-2" />
       </div>
     )
@@ -236,7 +242,7 @@ export default function AnalyticsPage() {
         </button>
       </div>
 
-      {/* View tabs */}
+      {/* Tabs */}
       <div className="flex gap-1 p-1 bg-muted rounded-xl">
         {(['spending', 'trends', 'recurring'] as const).map(v => (
           <button key={v} onClick={() => setView(v)}
@@ -251,18 +257,16 @@ export default function AnalyticsPage() {
         <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="h-24 rounded-2xl shimmer" />)}</div>
       ) : (
         <>
-          {/* Spending breakdown */}
+          {/* Spending */}
           {view === 'spending' && (
             <div className="space-y-4">
-              {/* Donut */}
               <div className="bg-card rounded-2xl border p-4">
                 <h3 className="text-sm font-semibold mb-4">Spending by Category</h3>
                 <div className="flex items-center gap-4">
                   <div style={{ width: 140, height: 140 }} className="flex-shrink-0">
                     <ResponsiveContainer width={140} height={140}>
                       <PieChart>
-                        <Pie data={categoryData} cx="50%" cy="50%" innerRadius={45} outerRadius={65}
-                          paddingAngle={2} dataKey="amount" stroke="none">
+                        <Pie data={categoryData} cx="50%" cy="50%" innerRadius={45} outerRadius={65} paddingAngle={2} dataKey="amount" stroke="none">
                           {categoryData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
                         </Pie>
                       </PieChart>
@@ -274,26 +278,20 @@ export default function AnalyticsPage() {
                         className="w-full flex items-center gap-2 hover:opacity-70 transition-opacity text-left">
                         <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: cat.color }} />
                         <span className="text-xs text-muted-foreground truncate flex-1">{cat.name}</span>
-                        <span className="text-xs font-medium tabular-nums flex-shrink-0">
-                          {Math.round(cat.amount / totalSpent * 100)}%
-                        </span>
+                        <span className="text-xs font-medium tabular-nums flex-shrink-0">{Math.round(cat.amount / totalSpent * 100)}%</span>
                       </button>
                     ))}
                   </div>
                 </div>
               </div>
 
-              {/* Category list — tappable */}
               <div className="bg-card rounded-2xl border overflow-hidden">
                 <div className="px-4 py-2 border-b">
                   <p className="text-xs text-muted-foreground">Tap a category to see transactions</p>
                 </div>
                 {categoryData.map((cat, i) => (
                   <button key={cat.category_id} onClick={() => openDrillDown(cat)}
-                    className={cn(
-                      'w-full px-4 py-3 text-left hover:bg-muted/50 active:bg-muted transition-colors touch-active',
-                      i !== categoryData.length - 1 && 'border-b'
-                    )}>
+                    className={cn('w-full px-4 py-3 text-left hover:bg-muted/50 active:bg-muted transition-colors touch-active', i !== categoryData.length - 1 && 'border-b')}>
                     <div className="flex items-center gap-2 mb-1.5">
                       <span className="text-base">{cat.icon}</span>
                       <span className="text-sm font-medium flex-1">{cat.name}</span>
@@ -304,10 +302,7 @@ export default function AnalyticsPage() {
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-                        <div className="h-full rounded-full" style={{
-                          width: `${Math.round(cat.amount / totalSpent * 100)}%`,
-                          backgroundColor: cat.color,
-                        }} />
+                        <div className="h-full rounded-full" style={{ width: `${Math.round(cat.amount / totalSpent * 100)}%`, backgroundColor: cat.color }} />
                       </div>
                       <span className="text-xs text-muted-foreground flex-shrink-0">
                         {cat.transaction_count} txn{cat.transaction_count !== 1 ? 's' : ''} · {Math.round(cat.amount / totalSpent * 100)}%
@@ -381,7 +376,10 @@ export default function AnalyticsPage() {
             <div className="space-y-4">
               <div className="bg-card rounded-2xl border p-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold">Recurring Expenses</h3>
+                  <div>
+                    <h3 className="text-sm font-semibold">Recurring Expenses</h3>
+                    <p className="text-xs text-muted-foreground mt-0.5">Same merchant · 3+ months · within $5</p>
+                  </div>
                   <span className="text-sm font-semibold tabular-nums text-rose-400">
                     {formatCurrency(recurringData.reduce((s, r) => s + r.amount, 0))}/mo
                   </span>
@@ -395,23 +393,38 @@ export default function AnalyticsPage() {
                   </div>
                 ) : (
                   recurringData.map((r, i) => (
-                    <div key={i} className={cn('flex items-center gap-3 px-4 py-3', i !== recurringData.length - 1 && 'border-b')}>
-                      <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base"
-                        style={{ backgroundColor: ((r.category as any)?.color || '#94a3b8') + '22' }}>
-                        {(r.category as any)?.icon || '📦'}
+                    <div key={r.merchant} className={cn('flex items-center gap-3 px-4 py-3', i !== recurringData.length - 1 && 'border-b')}>
+                      <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base flex-shrink-0"
+                        style={{ backgroundColor: (r.category?.color || '#94a3b8') + '22' }}>
+                        {r.category?.icon || '📦'}
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium truncate">{r.merchant}</p>
-                        <p className="text-xs text-muted-foreground">{(r.category as any)?.name || 'Uncategorized'}</p>
+                        <p className="text-xs text-muted-foreground">{r.category?.name || 'Uncategorized'}</p>
                       </div>
-                      <div className="text-right">
-                        <p className="text-sm font-semibold tabular-nums">{formatCurrency(r.amount)}</p>
-                        <p className="text-xs text-muted-foreground">monthly</p>
+                      <div className="flex items-center gap-3 flex-shrink-0">
+                        <div className="text-right">
+                          <p className="text-sm font-semibold tabular-nums">{formatCurrency(r.amount)}</p>
+                          <p className="text-xs text-muted-foreground">monthly</p>
+                        </div>
+                        <button
+                          onClick={() => dismissRecurring(r.merchant)}
+                          className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                          title="Remove from recurring"
+                        >
+                          <X size={14} />
+                        </button>
                       </div>
                     </div>
                   ))
                 )}
               </div>
+
+              {dismissedMerchants.size > 0 && (
+                <p className="text-xs text-muted-foreground text-center">
+                  {dismissedMerchants.size} merchant{dismissedMerchants.size !== 1 ? 's' : ''} hidden
+                </p>
+              )}
             </div>
           )}
         </>
