@@ -1,13 +1,10 @@
 'use client'
 
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts'
+import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts'
 import type { MonthlyStats, Budget } from '@/lib/types'
 import { formatCurrency, getSpendingPercent } from '@/lib/utils'
 
-interface Props {
-  stats: MonthlyStats
-  budgets: Budget[]
-}
+interface Props { stats: MonthlyStats; budgets: Budget[] }
 
 export default function SpendingRing({ stats, budgets }: Props) {
   const totalBudget = budgets.reduce((s, b) => s + b.amount, 0)
@@ -23,68 +20,54 @@ export default function SpendingRing({ stats, budgets }: Props) {
   if (chartData.length === 0) return null
 
   return (
-    <div className="bg-card rounded-2xl p-4 border">
+    <div className="opt-card p-4">
+      <p className="opt-label mb-3">// SPENDING BREAKDOWN</p>
       <div className="flex items-start gap-4">
-        {/* Donut */}
-        <div className="relative flex-shrink-0" style={{ width: 120, height: 120 }}>
-          <ResponsiveContainer width={120} height={120}>
+        <div className="relative flex-shrink-0" style={{ width: 110, height: 110 }}>
+          <ResponsiveContainer width={110} height={110}>
             <PieChart>
-              <Pie
-                data={chartData}
-                cx="50%"
-                cy="50%"
-                innerRadius={40}
-                outerRadius={55}
-                paddingAngle={2}
-                dataKey="value"
-                stroke="none"
-              >
+              <Pie data={chartData} cx="50%" cy="50%" innerRadius={36} outerRadius={50}
+                paddingAngle={3} dataKey="value" stroke="none">
                 {chartData.map((entry, index) => (
-                  <Cell key={index} fill={entry.color} />
+                  <Cell key={index} fill={entry.color} style={{ filter: `drop-shadow(0 0 4px ${entry.color})` }} />
                 ))}
               </Pie>
             </PieChart>
           </ResponsiveContainer>
-          {/* Center text */}
           <div className="absolute inset-0 flex flex-col items-center justify-center">
             {pct !== null ? (
               <>
-                <span className={`text-lg font-bold tabular-nums ${isOver ? 'text-rose-400' : 'text-foreground'}`}>
+                <span style={{ fontFamily: 'var(--font-display)', fontSize: '16px', fontWeight: 700, color: isOver ? 'var(--red)' : 'var(--cyan)', textShadow: isOver ? '0 0 10px rgba(255,59,92,0.5)' : '0 0 10px var(--cyan-glow)' }}>
                   {pct}%
                 </span>
-                <span className="text-[9px] text-muted-foreground">of budget</span>
+                <span style={{ fontFamily: 'var(--font-display)', fontSize: '7px', letterSpacing: '0.1em', color: 'var(--text-muted)' }}>BUDGET</span>
               </>
             ) : (
-              <span className="text-xs text-muted-foreground text-center leading-tight">No<br/>budget</span>
+              <span style={{ fontFamily: 'var(--font-display)', fontSize: '8px', color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.4 }}>NO<br/>BUDGET</span>
             )}
           </div>
         </div>
-
-        {/* Categories list */}
         <div className="flex-1 min-w-0 space-y-2">
           {chartData.slice(0, 4).map(cat => {
             const pctOfTotal = Math.round((cat.value / stats.total_spent) * 100)
             return (
               <div key={cat.name} className="flex items-center gap-2">
-                <div
-                  className="w-2 h-2 rounded-full flex-shrink-0"
-                  style={{ backgroundColor: cat.color }}
-                />
-                <span className="text-xs text-muted-foreground truncate flex-1">{cat.name}</span>
+                <div className="w-1.5 h-1.5 rounded-none flex-shrink-0" style={{ background: cat.color, boxShadow: `0 0 4px ${cat.color}` }} />
+                <span style={{ fontSize: '11px', color: 'var(--text-secondary)', fontFamily: 'var(--font-sans)' }} className="truncate flex-1">{cat.name}</span>
                 <div className="text-right flex-shrink-0">
-                  <span className="text-xs font-medium tabular-nums">{formatCurrency(cat.value)}</span>
-                  <span className="text-[10px] text-muted-foreground ml-1">{pctOfTotal}%</span>
+                  <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--text-primary)' }}>{formatCurrency(cat.value)}</span>
+                  <span style={{ fontSize: '9px', color: 'var(--text-muted)', marginLeft: '4px' }}>{pctOfTotal}%</span>
                 </div>
               </div>
             )
           })}
         </div>
       </div>
-
-      {/* Total */}
-      <div className="mt-3 pt-3 border-t flex items-center justify-between">
-        <span className="text-xs text-muted-foreground">Total Spent</span>
-        <span className="text-sm font-semibold tabular-nums">{formatCurrency(stats.total_spent)}</span>
+      <div className="mt-3 pt-3 flex items-center justify-between" style={{ borderTop: '1px solid var(--border-cyan)' }}>
+        <span className="opt-label">TOTAL SPENT</span>
+        <span style={{ fontFamily: 'var(--font-display)', fontSize: '14px', color: 'var(--orange)', textShadow: '0 0 8px rgba(255,107,0,0.3)' }}>
+          {formatCurrency(stats.total_spent)}
+        </span>
       </div>
     </div>
   )
