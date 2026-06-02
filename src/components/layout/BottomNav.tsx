@@ -3,14 +3,13 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { LayoutDashboard, ArrowLeftRight, BarChart2, Upload, Settings } from 'lucide-react'
-import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
-  { href: '/dashboard', icon: LayoutDashboard, label: 'Overview' },
-  { href: '/transactions', icon: ArrowLeftRight, label: 'Spending' },
-  { href: '/upload', icon: Upload, label: 'Upload' },
-  { href: '/analytics', icon: BarChart2, label: 'Analytics' },
-  { href: '/settings', icon: Settings, label: 'Settings' },
+  { href: '/dashboard', icon: LayoutDashboard, label: 'HOME' },
+  { href: '/transactions', icon: ArrowLeftRight, label: 'DATA' },
+  { href: '/upload', icon: Upload, label: 'IMPORT' },
+  { href: '/analytics', icon: BarChart2, label: 'INTEL' },
+  { href: '/settings', icon: Settings, label: 'SYS' },
 ]
 
 export default function BottomNav() {
@@ -19,40 +18,41 @@ export default function BottomNav() {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 max-w-md mx-auto">
       <div className="glass border-t bottom-nav">
-        <div className="flex items-center justify-around px-2 pt-2">
+        <div className="flex items-center justify-around px-1 pt-2">
           {NAV_ITEMS.map(({ href, icon: Icon, label }) => {
             const isActive = pathname.startsWith(href)
             const isUpload = href === '/upload'
+
             return (
               <Link
                 key={href}
                 href={href}
-                className={cn(
-                  'flex flex-col items-center gap-1 px-3 py-2 rounded-xl transition-all duration-200 touch-active',
-                  isActive
-                    ? 'text-violet-400'
-                    : 'text-muted-foreground hover:text-foreground',
-                  isUpload && 'relative'
-                )}
+                className="flex flex-col items-center gap-1 px-2 py-2 touch-active transition-all"
+                style={{
+                  color: isActive ? 'var(--cyan)' : 'var(--text-muted)',
+                  borderTop: isActive ? '2px solid var(--cyan)' : '2px solid transparent',
+                  marginTop: '-2px',
+                }}
               >
                 {isUpload ? (
-                  <div className={cn(
-                    'p-2.5 rounded-2xl transition-all duration-200',
-                    isActive ? 'bg-violet-500' : 'bg-violet-500/20 hover:bg-violet-500/30'
-                  )}>
-                    <Icon size={20} className={isActive ? 'text-white' : 'text-violet-400'} />
+                  <div style={{
+                    padding: '8px',
+                    border: `1px solid ${isActive ? 'var(--cyan)' : 'var(--border-cyan)'}`,
+                    background: isActive ? 'rgba(0,245,255,0.12)' : 'transparent',
+                    borderRadius: '4px',
+                    boxShadow: isActive ? '0 0 12px rgba(0,245,255,0.3)' : 'none',
+                  }}>
+                    <Icon size={18} style={{ color: isActive ? 'var(--cyan)' : 'var(--text-muted)' }} />
                   </div>
                 ) : (
-                  <Icon
-                    size={22}
-                    strokeWidth={isActive ? 2.2 : 1.8}
-                    className="transition-all duration-200"
-                  />
+                  <Icon size={20} strokeWidth={isActive ? 2 : 1.5} />
                 )}
-                <span className={cn(
-                  'text-[10px] font-medium tracking-wide',
-                  isUpload && 'mt-0.5'
-                )}>
+                <span style={{
+                  fontFamily: 'var(--font-display)',
+                  fontSize: '8px',
+                  letterSpacing: '0.15em',
+                  textShadow: isActive ? '0 0 8px var(--cyan-glow)' : 'none',
+                }}>
                   {label}
                 </span>
               </Link>
