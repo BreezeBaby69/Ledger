@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Lock, Eye, EyeOff } from 'lucide-react'
+import { Eye, EyeOff } from 'lucide-react'
 
 export default function LoginPage() {
   const [password, setPassword] = useState('')
@@ -26,61 +26,71 @@ export default function LoginPage() {
       router.push('/dashboard')
       router.refresh()
     } else {
-      setError('Incorrect password')
+      setError('// ACCESS DENIED')
       setLoading(false)
     }
   }
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-background">
-      <div className="w-full max-w-sm space-y-8">
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px', background: 'var(--bg)' }}>
+      <div style={{ width: '100%', maxWidth: '340px' }}>
         {/* Logo */}
-        <div className="text-center space-y-2">
-          <div className="w-16 h-16 rounded-2xl bg-violet-500/20 border border-violet-500/30 flex items-center justify-center mx-auto">
-            <span className="text-3xl">💰</span>
+        <div style={{ textAlign: 'center', marginBottom: '48px' }}>
+          <div style={{
+            width: '64px', height: '64px',
+            border: '1px solid var(--cyan)',
+            borderRadius: '4px',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            margin: '0 auto 20px',
+            boxShadow: '0 0 20px rgba(0,245,255,0.2), inset 0 0 20px rgba(0,245,255,0.05)',
+            background: 'rgba(0,245,255,0.05)',
+          }}>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: '24px', fontWeight: 900, color: 'var(--cyan)', textShadow: '0 0 14px var(--cyan-glow)' }}>◈</span>
           </div>
-          <h1 className="text-2xl font-semibold tracking-tight">Ledger</h1>
-          <p className="text-sm text-muted-foreground">Your personal budget</p>
+          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: '22px', fontWeight: 900, letterSpacing: '0.3em', color: 'var(--cyan)', textShadow: '0 0 20px var(--cyan-glow)', marginBottom: '6px' }}>
+            OPTIMIZE
+          </h1>
+          <p style={{ fontFamily: 'var(--font-display)', fontSize: '9px', letterSpacing: '0.25em', color: 'var(--text-muted)' }}>
+            PERSONAL FINANCE SYSTEM v1.0
+          </p>
         </div>
 
         {/* Form */}
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Password
-            </label>
-            <div className="relative">
-              <Lock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div>
+            <p className="opt-label" style={{ marginBottom: '8px' }}>// AUTHENTICATION KEY</p>
+            <div style={{ position: 'relative' }}>
               <input
                 type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={e => setPassword(e.target.value)}
-                placeholder="Enter your password"
+                placeholder="ENTER ACCESS CODE"
                 autoComplete="current-password"
-                className="w-full bg-card border rounded-2xl pl-10 pr-10 py-3.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500/50 placeholder:text-muted-foreground"
+                className="opt-input"
+                style={{ paddingRight: '44px' }}
               />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
+              <button type="button" onClick={() => setShowPassword(!showPassword)}
+                style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer' }}>
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
           </div>
 
           {error && (
-            <p className="text-sm text-red-400 text-center">{error}</p>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.15em', color: 'var(--red)', textShadow: '0 0 8px rgba(255,59,92,0.5)', textAlign: 'center' }}>
+              {error}
+            </p>
           )}
 
-          <button
-            type="submit"
-            disabled={!password || loading}
-            className="w-full bg-violet-500 hover:bg-violet-600 disabled:opacity-40 text-white rounded-2xl py-3.5 text-sm font-semibold transition-colors"
-          >
-            {loading ? 'Signing in...' : 'Sign In'}
+          <button type="submit" disabled={!password || loading} className="opt-btn-primary"
+            style={{ padding: '14px', fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.25em', borderRadius: '4px', border: '1px solid var(--cyan)' }}>
+            {loading ? 'AUTHENTICATING...' : '[ INITIALIZE ]'}
           </button>
         </form>
+
+        <p style={{ fontFamily: 'var(--font-display)', fontSize: '8px', letterSpacing: '0.15em', color: 'var(--text-muted)', textAlign: 'center', marginTop: '32px' }}>
+          SECURE CHANNEL · ENCRYPTED
+        </p>
       </div>
     </div>
   )
