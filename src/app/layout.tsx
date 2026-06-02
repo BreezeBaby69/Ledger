@@ -2,13 +2,13 @@ import type { Metadata, Viewport } from 'next'
 import '@/styles/globals.css'
 
 export const metadata: Metadata = {
-  title: 'Ledger — Personal Budget',
-  description: 'Your beautiful personal budgeting app',
+  title: 'OPTIMIZE // BUDGET',
+  description: 'Personal finance command center',
   manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
-    title: 'Ledger',
+    title: 'OPTIMIZE',
   },
 }
 
@@ -18,10 +18,7 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   viewportFit: 'cover',
-  themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#f8f8f8' },
-    { media: '(prefers-color-scheme: dark)', color: '#0d1117' },
-  ],
+  themeColor: '#010a0f',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -33,7 +30,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="mobile-web-app-capable" content="yes" />
       </head>
-      <body className="dark min-h-screen antialiased">
+      <body className="min-h-screen antialiased">
         {children}
       </body>
     </html>
