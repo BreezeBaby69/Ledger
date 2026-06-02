@@ -11,7 +11,6 @@ import AccountCards from './AccountCards'
 import MonthlyTrendChart from './MonthlyTrendChart'
 import { ChevronLeft, ChevronRight, TrendingUp, TrendingDown } from 'lucide-react'
 import { format, parseISO, subMonths, addMonths } from 'date-fns'
-import { cn } from '@/lib/utils'
 
 export default function DashboardClient({ month: initialMonth }: { month: string }) {
   const [month, setMonth] = useState(initialMonth)
@@ -31,25 +30,18 @@ export default function DashboardClient({ month: initialMonth }: { month: string
       setAccounts(accs || [])
 
       const start = month + '-01'
-      const end = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0)
-        .toISOString().split('T')[0]
+      const end = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0).toISOString().split('T')[0]
 
       const { data: txns } = await supabase
         .from('transactions')
         .select('*, category:categories(*), account:accounts(*)')
-        .gte('date', start)
-        .lte('date', end)
+        .gte('date', start).lte('date', end)
         .order('date', { ascending: false })
 
       const allTxns = txns || []
-
-      // Expenses = negative amounts that are NOT transfers
       const expenses = allTxns.filter((t: any) => t.amount < 0 && !t.is_transfer)
-
-      // Income = positive amounts that are NOT transfers
       const income = allTxns.filter((t: any) => t.amount > 0 && !t.is_transfer)
 
-      // Build category breakdown from expenses
       const byCategory: Record<string, MonthlyStats['by_category'][0]> = {}
       for (const t of expenses) {
         const catId = t.category_id || 'uncategorized'
@@ -57,7 +49,7 @@ export default function DashboardClient({ month: initialMonth }: { month: string
           byCategory[catId] = {
             category_id: catId,
             category_name: (t.category as any)?.name || 'Uncategorized',
-            category_color: (t.category as any)?.color || '#94a3b8',
+            category_color: (t.category as any)?.color || '#00f5ff',
             amount: 0,
             transaction_count: 0,
           }
@@ -79,19 +71,11 @@ export default function DashboardClient({ month: initialMonth }: { month: string
 
       setRecentTxns(allTxns.slice(0, 8))
 
-      // Load budgets with spent amounts
-      const { data: bdgs } = await supabase
-        .from('budgets')
-        .select('*, category:categories(*)')
-        .eq('month', month)
-
+      const { data: bdgs } = await supabase.from('budgets').select('*, category:categories(*)').eq('month', month)
       const spentByCategory: Record<string, number> = {}
       for (const t of expenses) {
-        if (t.category_id) {
-          spentByCategory[t.category_id] = (spentByCategory[t.category_id] || 0) + Math.abs(t.amount)
-        }
+        if (t.category_id) spentByCategory[t.category_id] = (spentByCategory[t.category_id] || 0) + Math.abs(t.amount)
       }
-
       setBudgets((bdgs || []).map((b: any) => ({ ...b, spent: spentByCategory[b.category_id] || 0 })))
     } catch (err) {
       console.error(err)
@@ -100,123 +84,96 @@ export default function DashboardClient({ month: initialMonth }: { month: string
     }
   }
 
-  function prevMonth() {
-    const date = parseISO(month + '-01')
-    setMonth(format(subMonths(date, 1), 'yyyy-MM'))
-  }
-
+  function prevMonth() { setMonth(format(subMonths(parseISO(month + '-01'), 1), 'yyyy-MM')) }
   function nextMonth() {
-    const date = parseISO(month + '-01')
-    const next = addMonths(date, 1)
+    const next = addMonths(parseISO(month + '-01'), 1)
     if (next <= new Date()) setMonth(format(next, 'yyyy-MM'))
   }
 
   const isCurrentMonth = month === getCurrentMonth()
-  const monthLabel = format(parseISO(month + '-01'), 'MMMM yyyy')
-
-  // Net worth = sum of all account balances (credit cards subtract)
-  const totalBalance = accounts.reduce((s, a) => {
-    return a.type === 'credit_card' ? s - a.balance : s + a.balance
-  }, 0)
-
-  // Net for the month = income - expenses
+  const monthLabel = format(parseISO(month + '-01'), 'MMM yyyy').toUpperCase()
   const monthNet = (stats?.total_income || 0) - (stats?.total_spent || 0)
 
   if (loading) return <DashboardSkeleton />
 
   return (
-    <div className="space-y-5">
-      {/* Month Selector */}
+    <div className="space-y-4 page-transition">
+      {/* Month selector */}
       <div className="flex items-center justify-between">
-        <button onClick={prevMonth} className="p-2 rounded-xl hover:bg-muted transition-colors">
-          <ChevronLeft size={18} className="text-muted-foreground" />
+        <button onClick={prevMonth} className="p-2 touch-active" style={{ color: 'var(--cyan)' }}>
+          <ChevronLeft size={16} />
         </button>
-        <span className="font-medium text-sm">{monthLabel}</span>
-        <button onClick={nextMonth} disabled={isCurrentMonth}
-          className="p-2 rounded-xl hover:bg-muted transition-colors disabled:opacity-30">
-          <ChevronRight size={18} className="text-muted-foreground" />
+        <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.2em', color: 'var(--cyan)' }}>
+          {monthLabel}
+        </span>
+        <button onClick={nextMonth} disabled={isCurrentMonth} className="p-2 touch-active" style={{ color: isCurrentMonth ? 'var(--text-muted)' : 'var(--cyan)' }}>
+          <ChevronRight size={16} />
         </button>
       </div>
 
-      {/* Hero Card */}
-      <div className="rounded-2xl p-5 relative overflow-hidden" style={{
-        background: 'linear-gradient(135deg, #1e0a4a 0%, #2d1065 50%, #1a1040 100%)'
-      }}>
-        <div className="absolute inset-0 opacity-20"
-          style={{ backgroundImage: 'radial-gradient(circle at 70% 30%, #8b5cf6 0%, transparent 60%)' }} />
-        <div className="relative">
-          <p className="text-violet-300 text-xs font-medium uppercase tracking-wider mb-1">
-            {isCurrentMonth ? 'This Month' : monthLabel}
-          </p>
-          <div className="flex items-end justify-between mb-4">
-            <div>
-              <p className="text-3xl font-semibold tabular-nums text-white">
-                {monthNet >= 0 ? '+' : ''}{formatCurrency(monthNet)}
-              </p>
-              <p className="text-violet-300 text-xs mt-0.5">
-                {monthNet >= 0 ? 'ahead this month' : 'over income this month'}
-              </p>
+      {/* Hero HUD card */}
+      <div className="opt-card p-5" style={{ background: 'linear-gradient(135deg, #061a26, #030f18)' }}>
+        <p className="opt-label mb-3">// MONTHLY NET</p>
+        <p className="stat-number text-4xl font-bold mb-4" style={{
+          color: monthNet >= 0 ? 'var(--green)' : 'var(--red)',
+          textShadow: monthNet >= 0 ? '0 0 20px rgba(0,255,136,0.4)' : '0 0 20px rgba(255,59,92,0.4)',
+        }}>
+          {monthNet >= 0 ? '+' : ''}{formatCurrency(monthNet)}
+        </p>
+        <div className="flex gap-8">
+          <div>
+            <div className="flex items-center gap-1.5 mb-1">
+              <TrendingUp size={11} style={{ color: 'var(--green)' }} />
+              <span className="opt-label" style={{ color: 'var(--green)' }}>INCOME</span>
             </div>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '14px', color: 'var(--green)', textShadow: '0 0 10px rgba(0,255,136,0.3)' }}>
+              {formatCurrency(stats?.total_income || 0)}
+            </p>
           </div>
-          <div className="flex gap-6">
-            <div>
-              <div className="flex items-center gap-1 text-emerald-400 mb-0.5">
-                <TrendingUp size={12} />
-                <span className="text-xs">Income</span>
-              </div>
-              <p className="text-sm font-medium text-white tabular-nums">
-                {formatCurrency(stats?.total_income || 0)}
-              </p>
+          <div>
+            <div className="flex items-center gap-1.5 mb-1">
+              <TrendingDown size={11} style={{ color: 'var(--orange)' }} />
+              <span className="opt-label" style={{ color: 'var(--orange)' }}>SPENT</span>
             </div>
-            <div>
-              <div className="flex items-center gap-1 text-rose-400 mb-0.5">
-                <TrendingDown size={12} />
-                <span className="text-xs">Spent</span>
-              </div>
-              <p className="text-sm font-medium text-white tabular-nums">
-                {formatCurrency(stats?.total_spent || 0)}
-              </p>
-            </div>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '14px', color: 'var(--orange)', textShadow: '0 0 10px rgba(255,107,0,0.3)' }}>
+              {formatCurrency(stats?.total_spent || 0)}
+            </p>
           </div>
+        </div>
+        {/* Corner decoration */}
+        <div style={{ position: 'absolute', top: '8px', right: '12px', fontFamily: 'var(--font-display)', fontSize: '9px', letterSpacing: '0.15em', color: 'var(--text-muted)' }}>
+          SYS::ACTIVE
         </div>
       </div>
 
-      {/* Spending Ring */}
-      {stats && stats.total_spent > 0 && (
-        <SpendingRing stats={stats} budgets={budgets} />
-      )}
+      {/* Spending ring */}
+      {stats && stats.total_spent > 0 && <SpendingRing stats={stats} budgets={budgets} />}
 
-      {/* Account Cards */}
+      {/* Accounts */}
       <AccountCards accounts={accounts} />
 
-      {/* Budget Progress */}
+      {/* Budgets */}
       {budgets.length > 0 && (
         <div>
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-            Budget Progress
-          </h2>
+          <p className="opt-label mb-3">// BUDGET STATUS</p>
           <div className="space-y-2">
-            {budgets.slice(0, 5).map(b => (
-              <BudgetCard key={b.id} budget={b} />
-            ))}
+            {budgets.slice(0, 5).map(b => <BudgetCard key={b.id} budget={b} />)}
           </div>
         </div>
       )}
 
-      {/* Recent Transactions */}
+      {/* Recent */}
       <div>
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">Recent</h2>
-          <a href="/transactions" className="text-xs text-violet-400 font-medium">See all</a>
+          <p className="opt-label">// RECENT ACTIVITY</p>
+          <a href="/transactions" style={{ fontFamily: 'var(--font-display)', fontSize: '9px', letterSpacing: '0.15em', color: 'var(--cyan)' }}>VIEW ALL →</a>
         </div>
         <RecentTransactions transactions={recentTxns} />
       </div>
 
-      {/* Monthly Trend */}
+      {/* Trend */}
       <div>
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">
-          6-Month Trend
-        </h2>
+        <p className="opt-label mb-3">// 6-MONTH TREND</p>
         <MonthlyTrendChart currentMonth={month} />
       </div>
 
@@ -228,11 +185,7 @@ export default function DashboardClient({ month: initialMonth }: { month: string
 function DashboardSkeleton() {
   return (
     <div className="space-y-4">
-      <div className="h-8 w-40 mx-auto rounded-lg shimmer" />
-      <div className="h-36 rounded-2xl shimmer" />
-      <div className="h-48 rounded-2xl shimmer" />
-      <div className="h-24 rounded-2xl shimmer" />
-      <div className="h-64 rounded-2xl shimmer" />
+      {[...Array(5)].map((_, i) => <div key={i} className="shimmer rounded" style={{ height: i === 1 ? '120px' : '80px' }} />)}
     </div>
   )
 }
