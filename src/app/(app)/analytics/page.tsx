@@ -6,7 +6,7 @@ import { formatCurrency, getCurrentMonth, getPreviousMonths, formatDate } from '
 import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar } from 'recharts'
 import { format, parseISO, subMonths, addMonths } from 'date-fns'
 import { cn } from '@/lib/utils'
-import { ChevronLeft, ChevronRight, ArrowLeft, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ArrowLeft, X, Check } from 'lucide-react'
 
 interface CategoryData {
   category_id: string
@@ -17,17 +17,37 @@ interface CategoryData {
   transaction_count: number
 }
 
+interface DrillTxn {
+  id: string
+  date: string
+  merchant: string
+  amount: number
+  category_id: string | null
+  category: { name: string; color: string; icon: string } | null
+}
+
+interface Category {
+  id: string
+  name: string
+  color: string
+  icon: string
+}
+
 export default function AnalyticsPage() {
   const [month, setMonth] = useState(getCurrentMonth())
   const [categoryData, setCategoryData] = useState<CategoryData[]>([])
+  const [allCategories, setAllCategories] = useState<Category[]>([])
   const [trendData, setTrendData] = useState<any[]>([])
   const [recurringData, setRecurringData] = useState<any[]>([])
   const [dismissedMerchants, setDismissedMerchants] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [view, setView] = useState<'spending' | 'trends' | 'recurring'>('spending')
+
   const [drillCategory, setDrillCategory] = useState<CategoryData | null>(null)
-  const [drillTxns, setDrillTxns] = useState<any[]>([])
+  const [drillTxns, setDrillTxns] = useState<DrillTxn[]>([])
   const [drillLoading, setDrillLoading] = useState(false)
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [savedId, setSavedId] = useState<string | null>(null)
 
   const supabase = createClient()
 
@@ -38,7 +58,9 @@ export default function AnalyticsPage() {
     const start = month + '-01'
     const end = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0).toISOString().split('T')[0]
 
-    // Category spending
+    const { data: cats } = await supabase.from('categories').select('id, name, color, icon').order('name')
+    setAllCategories(cats || [])
+
     const { data: txns } = await supabase
       .from('transactions')
       .select('amount, category_id, category:categories(id, name, color, icon)')
@@ -52,8 +74,8 @@ export default function AnalyticsPage() {
       if (!catMap[id]) catMap[id] = {
         category_id: id,
         name: cat?.name || 'Uncategorized',
-        color: cat?.color || '#94a3b8',
-        icon: cat?.icon || '📦',
+        color: cat?.color || '#00f5ff',
+        icon: cat?.icon || '◈',
         amount: 0,
         transaction_count: 0,
       }
@@ -62,7 +84,6 @@ export default function AnalyticsPage() {
     }
     setCategoryData(Object.values(catMap).sort((a, b) => b.amount - a.amount))
 
-    // 6-month trend
     const months = getPreviousMonths(6)
     const trend = await Promise.all(months.map(async m => {
       const s = m + '-01'
@@ -71,19 +92,17 @@ export default function AnalyticsPage() {
       const all = data || []
       return {
         month: m,
-        label: format(parseISO(m + '-01'), 'MMM'),
+        label: format(parseISO(m + '-01'), 'MMM').toUpperCase(),
         spent: all.filter((t: any) => t.amount < 0 && !t.is_transfer).reduce((s: number, t: any) => s + Math.abs(t.amount), 0),
         income: all.filter((t: any) => t.amount > 0 && !t.is_transfer).reduce((s: number, t: any) => s + t.amount, 0),
       }
     }))
     setTrendData(trend)
 
-    // Load dismissed merchants
     const { data: dismissed } = await supabase.from('dismissed_recurring').select('merchant')
     const dismissedSet = new Set((dismissed || []).map((d: any) => d.merchant))
     setDismissedMerchants(dismissedSet)
 
-    // Recurring — deduplicated by merchant, excluding dismissed
     const { data: recTxns } = await supabase
       .from('transactions')
       .select('merchant, amount, category:categories(name, color, icon)')
@@ -91,21 +110,20 @@ export default function AnalyticsPage() {
       .eq('is_transfer', false)
       .lt('amount', 0)
 
-    // Deduplicate by merchant name — take the most common amount
-    const recMap: Record<string, { merchant: string; amount: number; category: any; count: number }> = {}
+    const recMap: Record<string, any> = {}
     for (const t of recTxns || []) {
       if (dismissedSet.has(t.merchant)) continue
       const key = t.merchant
-      if (!recMap[key]) {
-        recMap[key] = { merchant: t.merchant, amount: Math.abs(t.amount), category: t.category, count: 1 }
-      } else {
-        recMap[key].count++
-        // Use median amount
-        recMap[key].amount = Math.abs(t.amount)
-      }
+      if (!recMap[key]) recMap[key] = { merchant: t.merchant, amount: Math.abs(t.amount), category: t.category, count: 1 }
+      else { recMap[key].count++; recMap[key].amount = Math.abs(t.amount) }
+    }
+    setRecurringData(Object.values(recMap).sort((a, b) => b.amount - a.amount))
+
+    // If drill-down open, refresh it too
+    if (drillCategory) {
+      await loadDrillTxns(drillCategory)
     }
 
-    setRecurringData(Object.values(recMap).sort((a, b) => b.amount - a.amount))
     setLoading(false)
   }
 
@@ -115,15 +133,14 @@ export default function AnalyticsPage() {
     setRecurringData(prev => prev.filter(r => r.merchant !== merchant))
   }
 
-  async function openDrillDown(cat: CategoryData) {
-    setDrillCategory(cat)
+  async function loadDrillTxns(cat: CategoryData) {
     setDrillLoading(true)
     const start = month + '-01'
     const end = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0).toISOString().split('T')[0]
 
     let query = supabase
       .from('transactions')
-      .select('id, date, merchant, amount, category:categories(name, color, icon)')
+      .select('id, date, merchant, amount, category_id, category:categories(name, color, icon)')
       .gte('date', start).lte('date', end)
       .eq('is_transfer', false).lt('amount', 0)
       .order('date', { ascending: false })
@@ -135,13 +152,36 @@ export default function AnalyticsPage() {
     }
 
     const { data } = await query
-    setDrillTxns(data || [])
+    setDrillTxns((data || []) as any[])
     setDrillLoading(false)
+  }
+
+  async function openDrillDown(cat: CategoryData) {
+    setDrillCategory(cat)
+    await loadDrillTxns(cat)
   }
 
   function closeDrillDown() {
     setDrillCategory(null)
     setDrillTxns([])
+  }
+
+  async function updateTxnCategory(txnId: string, newCategoryId: string) {
+    setSavingId(txnId)
+    const { error } = await supabase
+      .from('transactions')
+      .update({ category_id: newCategoryId || null })
+      .eq('id', txnId)
+
+    if (!error) {
+      setSavedId(txnId)
+      setTimeout(() => setSavedId(null), 1200)
+      // Remove from current drill list since it no longer belongs to this category
+      setDrillTxns(prev => prev.filter(t => t.id !== txnId))
+      // Refresh category totals in background
+      loadData()
+    }
+    setSavingId(null)
   }
 
   function prevMonth() {
@@ -155,119 +195,154 @@ export default function AnalyticsPage() {
   }
 
   const totalSpent = categoryData.reduce((s, c) => s + c.amount, 0)
-  const monthLabel = format(parseISO(month + '-01'), 'MMMM yyyy')
+  const monthLabel = format(parseISO(month + '-01'), 'MMM yyyy').toUpperCase()
 
-  const CustomTooltip = ({ active, payload }: any) => {
+  const CustomTooltip = ({ active, payload, label }: any) => {
     if (!active || !payload?.length) return null
     return (
-      <div className="bg-card border rounded-xl p-3 text-xs shadow-lg">
-        <p className="font-medium">{payload[0]?.name}</p>
-        <p className="text-muted-foreground">{formatCurrency(payload[0]?.value)}</p>
+      <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-cyan)', padding: '8px 12px', borderRadius: '2px' }}>
+        <p style={{ fontFamily: 'var(--font-display)', fontSize: '9px', letterSpacing: '0.15em', color: 'var(--cyan)', marginBottom: '4px' }}>{label}</p>
+        <p style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--orange)' }}>SPENT: {formatCurrency(payload[0]?.value || 0)}</p>
+        <p style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--green)' }}>INCOME: {formatCurrency(payload[1]?.value || 0)}</p>
       </div>
     )
   }
 
-  // Drill-down view
+  // ---- Drill-down view ----
   if (drillCategory) {
     return (
       <div className="space-y-4 page-transition">
         <div className="flex items-center gap-3">
-          <button onClick={closeDrillDown} className="p-2 rounded-xl hover:bg-muted transition-colors">
-            <ArrowLeft size={18} className="text-muted-foreground" />
+          <button onClick={closeDrillDown} className="p-2 touch-active" style={{ color: 'var(--cyan)' }}>
+            <ArrowLeft size={16} />
           </button>
           <div className="flex items-center gap-2 flex-1 min-w-0">
-            <span className="text-xl">{drillCategory.icon}</span>
+            <span className="text-lg">{drillCategory.icon}</span>
             <div className="min-w-0">
-              <h2 className="font-semibold truncate">{drillCategory.name}</h2>
-              <p className="text-xs text-muted-foreground">{monthLabel}</p>
+              <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '12px', letterSpacing: '0.15em', color: 'var(--cyan)', textShadow: '0 0 10px var(--cyan-glow)' }} className="truncate">
+                {drillCategory.name.toUpperCase()}
+              </h2>
+              <p className="opt-label" style={{ marginTop: '2px' }}>{monthLabel}</p>
             </div>
           </div>
           <div className="text-right flex-shrink-0">
-            <p className="text-sm font-semibold tabular-nums">{formatCurrency(drillCategory.amount)}</p>
-            <p className="text-xs text-muted-foreground">{drillCategory.transaction_count} transactions</p>
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '13px', color: 'var(--orange)', textShadow: '0 0 8px rgba(255,107,0,0.3)' }}>{formatCurrency(drillCategory.amount)}</p>
+            <p className="opt-label" style={{ marginTop: '2px' }}>{drillTxns.length} TXN</p>
           </div>
         </div>
 
-        <div className="bg-card rounded-2xl border p-4">
+        <div className="opt-card p-4">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs text-muted-foreground">% of total spending</span>
-            <span className="text-xs font-medium">{Math.round(drillCategory.amount / totalSpent * 100)}%</span>
+            <span className="opt-label">% OF TOTAL SPENDING</span>
+            <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--cyan)' }}>{Math.round(drillCategory.amount / totalSpent * 100)}%</span>
           </div>
-          <div className="h-2 bg-muted rounded-full overflow-hidden">
-            <div className="h-full rounded-full" style={{
+          <div className="opt-progress-track">
+            <div className="opt-progress-fill" style={{
               width: `${Math.round(drillCategory.amount / totalSpent * 100)}%`,
-              backgroundColor: drillCategory.color,
+              background: drillCategory.color,
+              boxShadow: `0 0 6px ${drillCategory.color}`,
             }} />
           </div>
         </div>
 
+        <p className="opt-label">// TAP A CATEGORY TO RECLASSIFY</p>
+
         {drillLoading ? (
-          <div className="space-y-2">{[...Array(4)].map((_, i) => <div key={i} className="h-16 rounded-xl shimmer" />)}</div>
+          <div className="space-y-2">{[...Array(4)].map((_, i) => <div key={i} className="shimmer rounded" style={{ height: '64px' }} />)}</div>
         ) : drillTxns.length === 0 ? (
-          <div className="bg-card rounded-2xl border p-8 text-center text-sm text-muted-foreground">No transactions</div>
+          <div className="opt-card p-8 text-center">
+            <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.2em', color: 'var(--text-muted)' }}>NO TRANSACTIONS</p>
+          </div>
         ) : (
-          <div className="bg-card rounded-2xl border overflow-hidden">
-            {drillTxns.map((txn, i) => (
-              <div key={txn.id} className={cn('flex items-center gap-3 px-4 py-3', i !== drillTxns.length - 1 && 'border-b')}>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">{txn.merchant}</p>
-                  <p className="text-xs text-muted-foreground">{formatDate(txn.date, 'EEEE, MMMM d')}</p>
+          <div className="space-y-2">
+            {drillTxns.map(txn => (
+              <div key={txn.id} className="opt-card p-3">
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <div className="min-w-0 flex-1">
+                    <p style={{ fontFamily: 'var(--font-sans)', fontSize: '12px', color: 'var(--text-primary)' }} className="truncate">{txn.merchant}</p>
+                    <p className="opt-label" style={{ marginTop: '2px' }}>{formatDate(txn.date, 'EEE MMM d').toUpperCase()}</p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {savedId === txn.id && <Check size={14} style={{ color: 'var(--green)' }} />}
+                    <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', color: 'var(--text-primary)' }}>
+                      {formatCurrency(txn.amount)}
+                    </span>
+                  </div>
                 </div>
-                <span className="text-sm font-medium tabular-nums">{formatCurrency(txn.amount)}</span>
+                <select
+                  value={txn.category_id || ''}
+                  onChange={e => updateTxnCategory(txn.id, e.target.value)}
+                  disabled={savingId === txn.id}
+                  className="opt-input"
+                  style={{ fontSize: '11px', padding: '6px 10px' }}
+                >
+                  <option value="">UNCATEGORIZED</option>
+                  {allCategories.map(c => (
+                    <option key={c.id} value={c.id}>{c.icon} {c.name.toUpperCase()}</option>
+                  ))}
+                </select>
               </div>
             ))}
           </div>
         )}
 
-        <div className="bg-card rounded-2xl border p-4 flex items-center justify-between">
-          <span className="text-sm font-medium">Total</span>
-          <span className="text-sm font-semibold tabular-nums">{formatCurrency(drillCategory.amount)}</span>
+        <div className="opt-card p-4 flex items-center justify-between">
+          <span className="opt-label">TOTAL</span>
+          <span style={{ fontFamily: 'var(--font-display)', fontSize: '14px', color: 'var(--orange)', textShadow: '0 0 8px rgba(255,107,0,0.3)' }}>
+            {formatCurrency(drillCategory.amount)}
+          </span>
         </div>
         <div className="h-2" />
       </div>
     )
   }
 
+  // ---- Main view ----
   return (
     <div className="space-y-4 page-transition">
-      {/* Month nav */}
       <div className="flex items-center justify-between">
-        <button onClick={prevMonth} className="p-2 rounded-xl hover:bg-muted transition-colors">
-          <ChevronLeft size={18} className="text-muted-foreground" />
+        <button onClick={prevMonth} className="p-2 touch-active" style={{ color: 'var(--cyan)' }}>
+          <ChevronLeft size={16} />
         </button>
-        <span className="font-medium text-sm">{monthLabel}</span>
-        <button onClick={nextMonth} disabled={month === getCurrentMonth()}
-          className="p-2 rounded-xl hover:bg-muted transition-colors disabled:opacity-30">
-          <ChevronRight size={18} className="text-muted-foreground" />
+        <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.2em', color: 'var(--cyan)' }}>{monthLabel}</span>
+        <button onClick={nextMonth} disabled={month === getCurrentMonth()} className="p-2 touch-active" style={{ color: month === getCurrentMonth() ? 'var(--text-muted)' : 'var(--cyan)' }}>
+          <ChevronRight size={16} />
         </button>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 p-1 bg-muted rounded-xl">
+      <div className="opt-card flex" style={{ padding: '4px' }}>
         {(['spending', 'trends', 'recurring'] as const).map(v => (
           <button key={v} onClick={() => setView(v)}
-            className={cn('flex-1 py-2 rounded-lg text-sm font-medium transition-all capitalize',
-              view === v ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground')}>
-            {v}
+            className="flex-1 py-2 transition-all"
+            style={{
+              fontFamily: 'var(--font-display)',
+              fontSize: '10px',
+              letterSpacing: '0.15em',
+              borderRadius: '2px',
+              color: view === v ? 'var(--cyan)' : 'var(--text-muted)',
+              background: view === v ? 'rgba(0,245,255,0.08)' : 'transparent',
+              border: view === v ? '1px solid var(--border-cyan-active)' : '1px solid transparent',
+            }}>
+            {v.toUpperCase()}
           </button>
         ))}
       </div>
 
       {loading ? (
-        <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="h-24 rounded-2xl shimmer" />)}</div>
+        <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="shimmer rounded" style={{ height: '96px' }} />)}</div>
       ) : (
         <>
-          {/* Spending */}
           {view === 'spending' && (
             <div className="space-y-4">
-              <div className="bg-card rounded-2xl border p-4">
-                <h3 className="text-sm font-semibold mb-4">Spending by Category</h3>
+              <div className="opt-card p-4">
+                <p className="opt-label mb-4">// SPENDING BY CATEGORY</p>
                 <div className="flex items-center gap-4">
                   <div style={{ width: 140, height: 140 }} className="flex-shrink-0">
                     <ResponsiveContainer width={140} height={140}>
                       <PieChart>
                         <Pie data={categoryData} cx="50%" cy="50%" innerRadius={45} outerRadius={65} paddingAngle={2} dataKey="amount" stroke="none">
-                          {categoryData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                          {categoryData.map((entry, i) => <Cell key={i} fill={entry.color} style={{ filter: `drop-shadow(0 0 4px ${entry.color})` }} />)}
                         </Pie>
                       </PieChart>
                     </ResponsiveContainer>
@@ -275,94 +350,99 @@ export default function AnalyticsPage() {
                   <div className="flex-1 space-y-2 min-w-0">
                     {categoryData.slice(0, 5).map(cat => (
                       <button key={cat.category_id} onClick={() => openDrillDown(cat)}
-                        className="w-full flex items-center gap-2 hover:opacity-70 transition-opacity text-left">
-                        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: cat.color }} />
-                        <span className="text-xs text-muted-foreground truncate flex-1">{cat.name}</span>
-                        <span className="text-xs font-medium tabular-nums flex-shrink-0">{Math.round(cat.amount / totalSpent * 100)}%</span>
+                        className="w-full flex items-center gap-2 hover:opacity-70 transition-opacity text-left touch-active">
+                        <div className="w-2 h-2 flex-shrink-0" style={{ background: cat.color, boxShadow: `0 0 4px ${cat.color}` }} />
+                        <span style={{ fontSize: '11px', color: 'var(--text-secondary)' }} className="truncate flex-1">{cat.name}</span>
+                        <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--text-primary)', flexShrink: 0 }}>
+                          {Math.round(cat.amount / totalSpent * 100)}%
+                        </span>
                       </button>
                     ))}
                   </div>
                 </div>
               </div>
 
-              <div className="bg-card rounded-2xl border overflow-hidden">
-                <div className="px-4 py-2 border-b">
-                  <p className="text-xs text-muted-foreground">Tap a category to see transactions</p>
+              <div className="opt-card overflow-hidden">
+                <div className="px-4 py-2" style={{ borderBottom: '1px solid var(--border-cyan)' }}>
+                  <p className="opt-label">TAP A CATEGORY TO SEE TRANSACTIONS</p>
                 </div>
-                {categoryData.map((cat, i) => (
+                {categoryData.map(cat => (
                   <button key={cat.category_id} onClick={() => openDrillDown(cat)}
-                    className={cn('w-full px-4 py-3 text-left hover:bg-muted/50 active:bg-muted transition-colors touch-active', i !== categoryData.length - 1 && 'border-b')}>
+                    className="w-full px-4 py-3 text-left transition-colors touch-active opt-row"
+                    onMouseEnter={e => (e.currentTarget.style.background = 'rgba(0,245,255,0.04)')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
                     <div className="flex items-center gap-2 mb-1.5">
                       <span className="text-base">{cat.icon}</span>
-                      <span className="text-sm font-medium flex-1">{cat.name}</span>
+                      <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.1em', color: 'var(--text-primary)', flex: 1 }}>{cat.name.toUpperCase()}</span>
                       <div className="flex items-center gap-2 flex-shrink-0">
-                        <span className="text-sm font-semibold tabular-nums">{formatCurrency(cat.amount)}</span>
-                        <ChevronRight size={14} className="text-muted-foreground" />
+                        <span style={{ fontFamily: 'var(--font-display)', fontSize: '12px', color: 'var(--orange)' }}>{formatCurrency(cat.amount)}</span>
+                        <ChevronRight size={14} style={{ color: 'var(--text-muted)' }} />
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
-                        <div className="h-full rounded-full" style={{ width: `${Math.round(cat.amount / totalSpent * 100)}%`, backgroundColor: cat.color }} />
+                      <div className="opt-progress-track flex-1">
+                        <div className="opt-progress-fill" style={{ width: `${Math.round(cat.amount / totalSpent * 100)}%`, background: cat.color, boxShadow: `0 0 4px ${cat.color}` }} />
                       </div>
-                      <span className="text-xs text-muted-foreground flex-shrink-0">
-                        {cat.transaction_count} txn{cat.transaction_count !== 1 ? 's' : ''} · {Math.round(cat.amount / totalSpent * 100)}%
-                      </span>
+                      <span className="opt-label flex-shrink-0">{cat.transaction_count} TXN · {Math.round(cat.amount / totalSpent * 100)}%</span>
                     </div>
                   </button>
                 ))}
                 {categoryData.length === 0 && (
-                  <div className="p-8 text-center text-sm text-muted-foreground">No spending data</div>
+                  <div className="p-8 text-center">
+                    <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.2em', color: 'var(--text-muted)' }}>NO SPENDING DATA</p>
+                  </div>
                 )}
               </div>
             </div>
           )}
 
-          {/* Trends */}
           {view === 'trends' && (
             <div className="space-y-4">
-              <div className="bg-card rounded-2xl border p-4">
-                <h3 className="text-sm font-semibold mb-4">6-Month Overview</h3>
+              <div className="opt-card p-4">
+                <p className="opt-label mb-4">// 6-MONTH OVERVIEW</p>
                 <ResponsiveContainer width="100%" height={200}>
                   <BarChart data={trendData} barGap={4} barCategoryGap="30%">
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }} />
+                    <CartesianGrid strokeDasharray="2 4" stroke="rgba(0,245,255,0.06)" vertical={false} />
+                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: 'var(--text-muted)', fontFamily: 'var(--font-display)', letterSpacing: '0.1em' }} />
                     <YAxis hide />
-                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'hsl(var(--muted))' }} />
-                    <Bar dataKey="spent" name="Spent" fill="#f43f5e" radius={[4, 4, 0, 0]} opacity={0.85} />
-                    <Bar dataKey="income" name="Income" fill="#10b981" radius={[4, 4, 0, 0]} opacity={0.85} />
+                    <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(0,245,255,0.04)' }} />
+                    <Bar dataKey="spent" name="Spent" fill="var(--orange)" radius={[2, 2, 0, 0]} opacity={0.9} />
+                    <Bar dataKey="income" name="Income" fill="var(--green)" radius={[2, 2, 0, 0]} opacity={0.9} />
                   </BarChart>
                 </ResponsiveContainer>
-                <div className="flex gap-4 justify-center mt-2">
-                  <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm bg-rose-500 opacity-85" /><span className="text-xs text-muted-foreground">Spent</span></div>
-                  <div className="flex items-center gap-1.5"><div className="w-2.5 h-2.5 rounded-sm bg-emerald-500 opacity-85" /><span className="text-xs text-muted-foreground">Income</span></div>
+                <div className="flex gap-6 justify-center mt-2">
+                  <div className="flex items-center gap-1.5"><div style={{ width: '8px', height: '8px', background: 'var(--orange)', boxShadow: '0 0 4px var(--orange)' }} /><span className="opt-label">SPENT</span></div>
+                  <div className="flex items-center gap-1.5"><div style={{ width: '8px', height: '8px', background: 'var(--green)', boxShadow: '0 0 4px var(--green)' }} /><span className="opt-label">INCOME</span></div>
                 </div>
               </div>
 
-              <div className="bg-card rounded-2xl border p-4">
-                <h3 className="text-sm font-semibold mb-4">Spending Trend</h3>
+              <div className="opt-card p-4">
+                <p className="opt-label mb-4">// SPENDING TREND</p>
                 <ResponsiveContainer width="100%" height={160}>
                   <LineChart data={trendData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: 'hsl(var(--muted-foreground))' }} />
+                    <CartesianGrid strokeDasharray="2 4" stroke="rgba(0,245,255,0.06)" vertical={false} />
+                    <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fontSize: 9, fill: 'var(--text-muted)', fontFamily: 'var(--font-display)', letterSpacing: '0.1em' }} />
                     <YAxis hide />
                     <Tooltip content={<CustomTooltip />} />
-                    <Line type="monotone" dataKey="spent" name="Spent" stroke="#f43f5e" strokeWidth={2} dot={{ fill: '#f43f5e', strokeWidth: 0, r: 4 }} />
+                    <Line type="monotone" dataKey="spent" name="Spent" stroke="var(--cyan)" strokeWidth={2}
+                      dot={{ fill: 'var(--cyan)', strokeWidth: 0, r: 3 }}
+                      style={{ filter: 'drop-shadow(0 0 6px var(--cyan))' }} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
 
-              <div className="bg-card rounded-2xl border overflow-hidden">
-                {[...trendData].reverse().map((m, i) => (
-                  <div key={m.month} className={cn('flex items-center justify-between px-4 py-3', i !== trendData.length - 1 && 'border-b')}>
-                    <span className="text-sm font-medium">{m.month}</span>
+              <div className="opt-card overflow-hidden">
+                {[...trendData].reverse().map(m => (
+                  <div key={m.month} className="flex items-center justify-between px-4 py-3 opt-row">
+                    <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.1em', color: 'var(--text-primary)' }}>{m.month}</span>
                     <div className="flex gap-4 text-right">
                       <div>
-                        <p className="text-xs text-muted-foreground">Spent</p>
-                        <p className="text-sm font-semibold tabular-nums text-rose-400">{formatCurrency(m.spent)}</p>
+                        <p className="opt-label">SPENT</p>
+                        <p style={{ fontFamily: 'var(--font-display)', fontSize: '12px', color: 'var(--orange)' }}>{formatCurrency(m.spent)}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-muted-foreground">Income</p>
-                        <p className="text-sm font-semibold tabular-nums text-emerald-400">{formatCurrency(m.income)}</p>
+                        <p className="opt-label">INCOME</p>
+                        <p style={{ fontFamily: 'var(--font-display)', fontSize: '12px', color: 'var(--green)' }}>{formatCurrency(m.income)}</p>
                       </div>
                     </div>
                   </div>
@@ -371,47 +451,42 @@ export default function AnalyticsPage() {
             </div>
           )}
 
-          {/* Recurring */}
           {view === 'recurring' && (
             <div className="space-y-4">
-              <div className="bg-card rounded-2xl border p-4">
+              <div className="opt-card p-4">
                 <div className="flex items-center justify-between">
                   <div>
-                    <h3 className="text-sm font-semibold">Recurring Expenses</h3>
-                    <p className="text-xs text-muted-foreground mt-0.5">Same merchant · 3+ months · within $5</p>
+                    <p className="opt-label">// RECURRING EXPENSES</p>
+                    <p className="opt-label" style={{ marginTop: '4px', opacity: 0.7 }}>SAME MERCHANT · 3+ MONTHS · WITHIN $5</p>
                   </div>
-                  <span className="text-sm font-semibold tabular-nums text-rose-400">
-                    {formatCurrency(recurringData.reduce((s, r) => s + r.amount, 0))}/mo
+                  <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', color: 'var(--orange)', textShadow: '0 0 8px rgba(255,107,0,0.3)' }}>
+                    {formatCurrency(recurringData.reduce((s, r) => s + r.amount, 0))}/MO
                   </span>
                 </div>
               </div>
 
-              <div className="bg-card rounded-2xl border overflow-hidden">
+              <div className="opt-card overflow-hidden">
                 {recurringData.length === 0 ? (
-                  <div className="p-8 text-center text-sm text-muted-foreground">
-                    No recurring transactions detected yet.
+                  <div className="p-8 text-center">
+                    <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', letterSpacing: '0.2em', color: 'var(--text-muted)' }}>NO RECURRING DETECTED</p>
                   </div>
                 ) : (
-                  recurringData.map((r, i) => (
-                    <div key={r.merchant} className={cn('flex items-center gap-3 px-4 py-3', i !== recurringData.length - 1 && 'border-b')}>
-                      <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base flex-shrink-0"
-                        style={{ backgroundColor: (r.category?.color || '#94a3b8') + '22' }}>
-                        {r.category?.icon || '📦'}
+                  recurringData.map(r => (
+                    <div key={r.merchant} className="flex items-center gap-3 px-4 py-3 opt-row">
+                      <div className="w-9 h-9 flex items-center justify-center text-base flex-shrink-0"
+                        style={{ background: 'rgba(0,245,255,0.06)', border: '1px solid var(--border-cyan)', borderRadius: '2px' }}>
+                        {r.category?.icon || '◈'}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">{r.merchant}</p>
-                        <p className="text-xs text-muted-foreground">{r.category?.name || 'Uncategorized'}</p>
+                        <p style={{ fontFamily: 'var(--font-sans)', fontSize: '12px', color: 'var(--text-primary)' }} className="truncate">{r.merchant}</p>
+                        <p className="opt-label" style={{ marginTop: '2px' }}>{(r.category?.name || 'UNCATEGORIZED').toUpperCase()}</p>
                       </div>
                       <div className="flex items-center gap-3 flex-shrink-0">
                         <div className="text-right">
-                          <p className="text-sm font-semibold tabular-nums">{formatCurrency(r.amount)}</p>
-                          <p className="text-xs text-muted-foreground">monthly</p>
+                          <p style={{ fontFamily: 'var(--font-display)', fontSize: '13px', color: 'var(--orange)' }}>{formatCurrency(r.amount)}</p>
+                          <p className="opt-label">MONTHLY</p>
                         </div>
-                        <button
-                          onClick={() => dismissRecurring(r.merchant)}
-                          className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
-                          title="Remove from recurring"
-                        >
+                        <button onClick={() => dismissRecurring(r.merchant)} className="p-1.5 touch-active" style={{ color: 'var(--text-muted)' }}>
                           <X size={14} />
                         </button>
                       </div>
@@ -421,9 +496,7 @@ export default function AnalyticsPage() {
               </div>
 
               {dismissedMerchants.size > 0 && (
-                <p className="text-xs text-muted-foreground text-center">
-                  {dismissedMerchants.size} merchant{dismissedMerchants.size !== 1 ? 's' : ''} hidden
-                </p>
+                <p className="opt-label text-center">{dismissedMerchants.size} MERCHANT{dismissedMerchants.size !== 1 ? 'S' : ''} HIDDEN</p>
               )}
             </div>
           )}
