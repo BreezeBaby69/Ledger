@@ -2,6 +2,7 @@
 
 import { usePathname } from 'next/navigation'
 import { LogOut } from 'lucide-react'
+import { useState, useEffect } from 'react'
 import { format } from 'date-fns'
 
 const PAGE_TITLES: Record<string, string> = {
@@ -17,7 +18,11 @@ const PAGE_TITLES: Record<string, string> = {
 export default function TopBar() {
   const pathname = usePathname()
   const title = Object.entries(PAGE_TITLES).find(([p]) => pathname.startsWith(p))?.[1] || 'OPTIMIZE'
-  const today = format(new Date(), 'EEE dd MMM yyyy').toUpperCase()
+
+  const [today, setToday] = useState('')
+  useEffect(() => {
+    setToday(format(new Date(), 'EEE dd MMM yyyy').toUpperCase())
+  }, [])
 
   async function handleLogout() {
     await fetch('/api/auth/logout', { method: 'POST' })
@@ -45,6 +50,7 @@ export default function TopBar() {
               letterSpacing: '0.2em',
               color: 'var(--text-muted)',
               marginTop: '1px',
+              minHeight: '11px',
             }}>
               {today}
             </p>
