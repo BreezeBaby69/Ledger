@@ -25,11 +25,9 @@ export async function POST(req: NextRequest) {
     const supabase = createAdminClient()
     const [{ data: rules }, { data: categories }, { data: existing }] = await Promise.all([
       supabase.from('merchant_rules').select('*, category:categories(*)'),
-      supabase.from('categories').select('id, name, icon').order('name'),
+      supabase.from('categories').select('id, name, icon, type').order('name'),
       supabase.from('transactions').select('date, merchant, amount').eq('account_id', accountId),
     ])
-
-    const categoryList = (categories || []).map((c: any) => `${c.id}: ${c.icon} ${c.name}`).join('\n')
 
     const prompt = `Extract all transactions from this Canadian bank or credit card statement.
 
@@ -47,12 +45,7 @@ Return ONLY the raw JSON array starting with [ and ending with ].`
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: prompt },
-            { inline_data: { mime_type: mimeType, data: base64 } }
-          ]
-        }],
+        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64 } }] }],
         generationConfig: { temperature: 0, maxOutputTokens: 65536 }
       }),
     })
@@ -60,22 +53,15 @@ Return ONLY the raw JSON array starting with [ and ending with ].`
     const geminiData = await geminiRes.json()
 
     if (!geminiRes.ok) {
-      return NextResponse.json(
-        { error: `Gemini error: ${geminiData?.error?.message || 'Unknown'}` },
-        { status: 500 }
-      )
+      return NextResponse.json({ error: `Gemini error: ${geminiData?.error?.message || 'Unknown'}` }, { status: 500 })
     }
 
     const rawText = (geminiData?.candidates?.[0]?.content?.parts?.[0]?.text || '').trim()
-
-    if (!rawText) {
-      return NextResponse.json({ error: 'Empty response from AI' }, { status: 500 })
-    }
+    if (!rawText) return NextResponse.json({ error: 'Empty response from AI' }, { status: 500 })
 
     const firstBracket = rawText.indexOf('[')
     const lastBracket = rawText.lastIndexOf(']')
-
-    if (firstBracket === -1 || lastBracket === -1 || lastBracket <= firstBracket) {
+    if (firstBracket === -1 || lastBracket === -1) {
       return NextResponse.json({ error: `No JSON array in response: ${rawText.substring(0, 200)}` }, { status: 500 })
     }
 
@@ -87,75 +73,88 @@ Return ONLY the raw JSON array starting with [ and ending with ].`
       return NextResponse.json({ error: `Parse error: ${e.message}` }, { status: 500 })
     }
 
-    // Build duplicate set
-    const existingSet = new Set(
-      (existing || []).map((t: any) => `${t.date}|${t.merchant}|${t.amount}`)
-    )
+    // Build lookup maps
+    const existingSet = new Set((existing || []).map((t: any) => `${t.date}|${t.merchant}|${t.amount}`))
 
-    // Build rule maps:
-    // 1. Exact merchant+amount rules (from import review corrections) — highest priority
-    // 2. Merchant-only rules (from post-import edits)
-    const exactRules = new Map<string, string>() // "merchant|amount" -> category_id
-    const merchantRules = new Map<string, string>() // "merchant pattern" -> category_id
+    // Category lookups by name
+    const catByName = new Map((categories || []).map((c: any) => [c.name.toLowerCase(), c.id]))
 
+    // Rule maps
+    const exactRules = new Map<string, string>()
+    const merchantRules = new Map<string, string>()
     for (const rule of rules || []) {
       if (rule.match_type === 'exact' && rule.merchant_pattern.includes('|')) {
         exactRules.set(rule.merchant_pattern.toLowerCase(), rule.category_id)
-      } else if (rule.match_type === 'contains') {
-        merchantRules.set(rule.merchant_pattern.toLowerCase(), rule.category_id)
-      } else if (rule.match_type === 'exact') {
+      } else {
         merchantRules.set(rule.merchant_pattern.toLowerCase(), rule.category_id)
       }
     }
-
-    // Category name lookup
-    const catByName = new Map((categories || []).map((c: any) => [c.name.toLowerCase(), c.id]))
 
     const transactions = extracted.map((t: any) => {
       const merchantLower = (t.merchant || '').toLowerCase()
       const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount)) || 0
       let categoryId: string | null = null
 
-      // 1. Check exact merchant+amount rule first (highest priority — user taught this)
+      // 1. Exact merchant+amount rule (highest priority)
       const exactKey = `${merchantLower}|${amount}`
-      if (exactRules.has(exactKey)) {
-        categoryId = exactRules.get(exactKey)!
-      }
+      if (exactRules.has(exactKey)) categoryId = exactRules.get(exactKey)!
 
-      // 2. Check merchant-only rules
+      // 2. Merchant-only rules
       if (!categoryId) {
         for (const [pattern, catId] of Array.from(merchantRules)) {
-          if (merchantLower.includes(pattern)) {
-            categoryId = catId
-            break
+          if (merchantLower.includes(pattern)) { categoryId = catId; break }
+        }
+      }
+
+      // 3. Built-in auto-categorization
+      if (!categoryId) {
+        if (amount > 0) {
+          // INCOME categorization
+          if (/edmonton elks|cfl|football|hockey|nhl|nba|mlb|nfl|sports team|athlete|player/i.test(merchantLower)) {
+            categoryId = catByName.get('employment') || null
+          } else if (/government|alberta|canada|cra|employment insurance|ei payment|cpp|oas|cerb|aish|alberta works/i.test(merchantLower)) {
+            categoryId = catByName.get('government') || null
+          } else if (/payroll|salary|wages|direct deposit|employer|corp|inc\.|ltd\.|llc/i.test(merchantLower)) {
+            categoryId = catByName.get('employment') || null
+          } else if (/etransfer|e-transfer received|interac.*received/i.test(merchantLower)) {
+            categoryId = catByName.get('other income') || null
+          } else if (/dividend|interest|investment|returns|capital gain/i.test(merchantLower)) {
+            categoryId = catByName.get('investment') || null
+          } else if (/freelance|contract|invoice|consulting|client/i.test(merchantLower)) {
+            categoryId = catByName.get('side hustle') || null
+          } else {
+            categoryId = catByName.get('other income') || null
+          }
+        } else {
+          // EXPENSE categorization
+          if (/costco|walmart|safeway|superstore|sobeys|loblaws|iga|freshco|no frills/i.test(merchantLower)) {
+            categoryId = catByName.get('groceries') || null
+          } else if (/tim horton|mcdonald|starbucks|subway|a&w|burger|pizza|restaurant|cafe|sushi|chipotle|earls|boston pizza/i.test(merchantLower)) {
+            categoryId = catByName.get('restaurants') || null
+          } else if (/shell|esso|petro|husky|pioneer|costco gas|canco/i.test(merchantLower)) {
+            categoryId = catByName.get('gas') || null
+          } else if (/netflix|spotify|amazon prime|disney|crave|apple\.com|google play/i.test(merchantLower)) {
+            categoryId = catByName.get('subscriptions') || null
+          } else if (/atco|enmax|telus|shaw|rogers|bell|epcor/i.test(merchantLower)) {
+            categoryId = catByName.get('utilities') || null
+          } else if (/best buy|amazon|ikea|home depot|canadian tire|sport chek|old navy|winners/i.test(merchantLower)) {
+            categoryId = catByName.get('shopping') || null
+          } else if (/cineplex|ticketmaster|landmark|bowling|golf/i.test(merchantLower)) {
+            categoryId = catByName.get('entertainment') || null
+          } else if (/atb|mortgage|rent|loan|insurance|lns/i.test(merchantLower)) {
+            categoryId = catByName.get('housing') || null
+          } else if (/credit card|payment|visa|mastercard|amex/i.test(merchantLower)) {
+            categoryId = catByName.get('credit card payments') || null
+          } else if (/transfer|e-transfer sent/i.test(merchantLower)) {
+            categoryId = catByName.get('transfers') || null
           }
         }
       }
 
-      // 3. Built-in auto-categorization as fallback
-      if (!categoryId) {
-        if (/costco|walmart|safeway|superstore|sobeys|loblaws|iga|freshco|no frills/i.test(merchantLower)) {
-          categoryId = catByName.get('groceries') || null
-        } else if (/tim horton|mcdonald|starbucks|subway|a&w|burger|pizza|restaurant|cafe|sushi|chipotle|firehouse|italian centre|earls|boston pizza/i.test(merchantLower)) {
-          categoryId = catByName.get('restaurants') || null
-        } else if (/shell|esso|petro|husky|pioneer|costco gas|hughes/i.test(merchantLower)) {
-          categoryId = catByName.get('gas') || null
-        } else if (/netflix|spotify|amazon prime|disney|crave|apple\.com|google play/i.test(merchantLower)) {
-          categoryId = catByName.get('subscriptions') || null
-        } else if (/atco|enmax|telus|shaw|rogers|bell|epcor/i.test(merchantLower)) {
-          categoryId = catByName.get('utilities') || null
-        } else if (/best buy|amazon|ikea|home depot|canadian tire|sport chek|old navy|winners|chapters/i.test(merchantLower)) {
-          categoryId = catByName.get('shopping') || null
-        } else if (/cineplex|ticketmaster|live bowl|golf|landmark/i.test(merchantLower)) {
-          categoryId = catByName.get('entertainment') || null
-        } else if (/crunch|goodlife|equinox|ymca/i.test(merchantLower)) {
-          categoryId = catByName.get('subscriptions') || null
-        } else if (/government|alberta|canada|cra|employment insurance/i.test(merchantLower)) {
-          categoryId = catByName.get('income') || null
-        } else if (amount > 0 && /interac|e-transfer received|deposit/i.test(merchantLower)) {
-          categoryId = catByName.get('income') || null
-        }
-      }
+      // Auto-flag credit card payments and transfers as transfers
+      const isCreditCardPayment = /credit card|payment.*visa|payment.*mastercard|payment.*amex/i.test(merchantLower)
+      const isTransferOut = amount < 0 && /^transfer|e-transfer sent/i.test(merchantLower)
+      const isAutoTransfer = isCreditCardPayment || isTransferOut
 
       const isDuplicate = existingSet.has(`${t.date}|${t.merchant}|${amount}`)
 
@@ -165,7 +164,7 @@ Return ONLY the raw JSON array starting with [ and ending with ].`
         merchant: t.merchant || 'Unknown',
         amount,
         suggested_category_id: categoryId,
-        is_transfer_candidate: false,
+        is_transfer_candidate: isAutoTransfer,
         is_duplicate_candidate: isDuplicate,
         status: isDuplicate ? 'pending' : 'approved',
         confidence: t.confidence ?? 0.9,
@@ -173,7 +172,6 @@ Return ONLY the raw JSON array starting with [ and ending with ].`
     })
 
     transactions.sort((a: any, b: any) => (b.date || '').localeCompare(a.date || ''))
-
     return NextResponse.json({ transactions, count: transactions.length })
 
   } catch (err: any) {
