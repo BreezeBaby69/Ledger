@@ -2,147 +2,242 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { Account, Transaction } from '@/lib/types'
 import { formatCurrency, formatDate, getCurrentMonth } from '@/lib/utils'
-import { CreditCard, Building2, PiggyBank, TrendingUp, TrendingDown } from 'lucide-react'
+import { ArrowLeft, Trash2, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
-
-const ACCOUNT_ICONS = { checking: Building2, savings: PiggyBank, credit_card: CreditCard }
+import { format, subMonths, parseISO } from 'date-fns'
+import TransactionEditModal from '@/components/transactions/TransactionEditModal'
+import type { Account, Transaction, Category } from '@/lib/types'
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
-  const [txns, setTxns] = useState<Transaction[]>([])
+  const [selectedAccount, setSelectedAccount] = useState<Account | null>(null)
+  const [transactions, setTransactions] = useState<Transaction[]>([])
+  const [categories, setCategories] = useState<Category[]>([])
+  const [allAccounts, setAllAccounts] = useState<Account[]>([])
+  const [dateRange, setDateRange] = useState<string>(getCurrentMonth())
   const [loading, setLoading] = useState(true)
+  const [selectedTxn, setSelectedTxn] = useState<Transaction | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const supabase = createClient()
 
   useEffect(() => { loadAccounts() }, [])
-  useEffect(() => { if (selected) loadTxns(selected) }, [selected])
+  useEffect(() => { if (selectedAccount) loadTransactions() }, [selectedAccount, dateRange])
 
   async function loadAccounts() {
-    const { data } = await supabase.from('accounts').select('*').order('created_at')
-    setAccounts(data || [])
-    if (data?.length) setSelected(data[0].id)
+    setLoading(true)
+    const [{ data: accs }, { data: cats }] = await Promise.all([
+      supabase.from('accounts').select('*').order('created_at'),
+      supabase.from('categories').select('*').order('name'),
+    ])
+    setAccounts(accs || [])
+    setAllAccounts(accs || [])
+    setCategories(cats || [])
     setLoading(false)
   }
 
-  async function loadTxns(accountId: string) {
-    const month = getCurrentMonth()
-    const start = month + '-01'
-    const end = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0).toISOString().split('T')[0]
-    const { data } = await supabase
+  async function loadTransactions() {
+    if (!selectedAccount) return
+    setLoading(true)
+
+    let query = supabase
       .from('transactions')
-      .select('*, category:categories(*)')
-      .eq('account_id', accountId)
-      .gte('date', start).lte('date', end)
+      .select('*, category:categories(*), account:accounts(*)')
+      .eq('account_id', selectedAccount.id)
       .order('date', { ascending: false })
-      .limit(20)
-    setTxns(data || [])
+      .order('created_at', { ascending: false })
+
+    if (dateRange !== 'all') {
+      const start = dateRange + '-01'
+      const end = new Date(parseInt(dateRange.split('-')[0]), parseInt(dateRange.split('-')[1]), 0).toISOString().split('T')[0]
+      query = query.gte('date', start).lte('date', end)
+    }
+
+    const { data } = await query
+    setTransactions(data || [])
+    setLoading(false)
   }
 
-  const account = accounts.find(a => a.id === selected)
-  const monthSpent = txns.filter(t => t.amount < 0 && !t.is_transfer).reduce((s, t) => s + Math.abs(t.amount), 0)
-  const monthIncome = txns.filter(t => t.amount > 0 && !t.is_transfer).reduce((s, t) => s + t.amount, 0)
+  async function deleteTxn(id: string) {
+    if (!confirm('Delete this transaction?')) return
+    setDeletingId(id)
+    await supabase.from('transactions').delete().eq('id', id)
+    setTransactions(prev => prev.filter(t => t.id !== id))
+    setDeletingId(null)
+  }
 
-  if (loading) return <div className="space-y-3">{[...Array(3)].map((_, i) => <div key={i} className="h-20 rounded-2xl shimmer" />)}</div>
+  // Month options
+  const monthOptions = Array.from({ length: 24 }, (_, i) => {
+    const d = subMonths(new Date(), i)
+    return { value: format(d, 'yyyy-MM'), label: format(d, 'MMM yyyy').toUpperCase() }
+  })
 
+  const totalSpent = transactions.filter(t => t.amount < 0 && !t.is_transfer).reduce((s, t) => s + Math.abs(t.amount), 0)
+  const totalIncome = transactions.filter(t => t.amount > 0 && !t.is_transfer).reduce((s, t) => s + t.amount, 0)
+
+  // Group by date
+  const grouped: Record<string, Transaction[]> = {}
+  for (const t of transactions) {
+    if (!grouped[t.date]) grouped[t.date] = []
+    grouped[t.date].push(t)
+  }
+  const dateGroups = Object.entries(grouped).sort(([a], [b]) => b.localeCompare(a))
+
+  // Account list view
+  if (!selectedAccount) {
+    return (
+      <div className="space-y-4 page-transition">
+        <p className="opt-label">// SELECT ACCOUNT</p>
+        {loading ? (
+          <div className="space-y-2">{[...Array(3)].map((_, i) => <div key={i} className="shimmer rounded" style={{ height: '72px' }} />)}</div>
+        ) : accounts.length === 0 ? (
+          <div className="opt-card p-8 text-center">
+            <p className="opt-label">NO ACCOUNTS · ADD ONE IN SETTINGS</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {accounts.map(acc => (
+              <button key={acc.id} onClick={() => setSelectedAccount(acc)}
+                className="w-full opt-card p-4 text-left touch-active transition-all"
+                onMouseEnter={e => ((e.currentTarget as HTMLElement).style.borderColor = 'var(--border-cyan-active)')}
+                onMouseLeave={e => ((e.currentTarget as HTMLElement).style.borderColor = 'var(--border-cyan)')}>
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 flex items-center justify-center text-lg flex-shrink-0"
+                    style={{ background: acc.color + '22', border: `1px solid ${acc.color}55`, borderRadius: '2px' }}>
+                    {acc.type === 'credit_card' ? '💳' : acc.type === 'savings' ? '💰' : '🏦'}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p style={{ fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.12em', color: 'var(--text-primary)' }}>
+                      {acc.name.toUpperCase()}
+                    </p>
+                    <p className="opt-label" style={{ marginTop: '3px' }}>
+                      {acc.institution}{acc.last_four && ` ···· ${acc.last_four}`} · {acc.type.replace('_', ' ').toUpperCase()}
+                    </p>
+                  </div>
+                  <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', color: 'var(--cyan)' }}>→</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Account transaction view
   return (
     <div className="space-y-4 page-transition">
-      {/* Account selector */}
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {accounts.map(acc => {
-          const Icon = ACCOUNT_ICONS[acc.type]
-          return (
-            <button
-              key={acc.id}
-              onClick={() => setSelected(acc.id)}
-              className={cn(
-                'flex-shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-2xl border transition-all',
-                selected === acc.id ? 'border-violet-500 bg-violet-500/10' : 'border-border bg-card'
-              )}
-            >
-              <Icon size={15} style={{ color: acc.color }} />
-              <span className="text-sm font-medium whitespace-nowrap">{acc.name}</span>
-            </button>
-          )
-        })}
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <button onClick={() => setSelectedAccount(null)} className="p-2 touch-active" style={{ color: 'var(--cyan)' }}>
+          <ArrowLeft size={16} />
+        </button>
+        <div className="flex-1 min-w-0">
+          <p style={{ fontFamily: 'var(--font-display)', fontSize: '12px', letterSpacing: '0.15em', color: 'var(--cyan)', textShadow: '0 0 10px var(--cyan-glow)' }} className="truncate">
+            {selectedAccount.name.toUpperCase()}
+          </p>
+          <p className="opt-label" style={{ marginTop: '2px' }}>{selectedAccount.institution}</p>
+        </div>
       </div>
 
-      {account && (
-        <>
-          {/* Account hero */}
-          <div className="rounded-2xl p-5 border" style={{
-            background: `linear-gradient(135deg, ${account.color}22, ${account.color}11)`
-          }}>
-            <div className="flex items-center gap-3 mb-4">
-              {(() => { const Icon = ACCOUNT_ICONS[account.type]; return <Icon size={20} style={{ color: account.color }} /> })()}
-              <div>
-                <p className="font-semibold">{account.name}</p>
-                <p className="text-xs text-muted-foreground">{account.institution}{account.last_four && ` •••• ${account.last_four}`}</p>
-              </div>
-            </div>
-            <p className="text-3xl font-semibold tabular-nums">{formatCurrency(account.balance)}</p>
-            {account.type === 'credit_card' && account.credit_limit && (
-              <>
-                <p className="text-xs text-muted-foreground mt-1">of {formatCurrency(account.credit_limit)} limit</p>
-                <div className="mt-3 h-1.5 bg-black/20 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full bg-white/60" style={{ width: `${Math.min((account.balance / account.credit_limit) * 100, 100)}%` }} />
-                </div>
-              </>
-            )}
-          </div>
+      {/* Date filter */}
+      <select
+        value={dateRange}
+        onChange={e => setDateRange(e.target.value)}
+        className="opt-input"
+        style={{ fontSize: '11px' }}
+      >
+        <option value="all">ALL TIME</option>
+        {monthOptions.map(m => (
+          <option key={m.value} value={m.value}>{m.label}</option>
+        ))}
+      </select>
 
-          {/* This month stats */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="bg-card rounded-2xl border p-4">
-              <div className="flex items-center gap-1.5 text-rose-400 mb-1">
-                <TrendingDown size={14} /><span className="text-xs font-medium">Spent</span>
-              </div>
-              <p className="text-xl font-semibold tabular-nums">{formatCurrency(monthSpent)}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">this month</p>
-            </div>
-            <div className="bg-card rounded-2xl border p-4">
-              <div className="flex items-center gap-1.5 text-emerald-400 mb-1">
-                <TrendingUp size={14} /><span className="text-xs font-medium">Income</span>
-              </div>
-              <p className="text-xl font-semibold tabular-nums">{formatCurrency(monthIncome)}</p>
-              <p className="text-xs text-muted-foreground mt-0.5">this month</p>
-            </div>
-          </div>
+      {/* Summary */}
+      <div className="flex gap-2">
+        <div className="opt-card flex-1 p-3 text-center">
+          <p className="opt-label">TRANSACTIONS</p>
+          <p style={{ fontFamily: 'var(--font-display)', fontSize: '16px', color: 'var(--cyan)', textShadow: '0 0 10px var(--cyan-glow)', marginTop: '4px' }}>
+            {transactions.length}
+          </p>
+        </div>
+        <div className="opt-card flex-1 p-3 text-center">
+          <p className="opt-label">SPENT</p>
+          <p style={{ fontFamily: 'var(--font-display)', fontSize: '14px', color: 'var(--orange)', marginTop: '4px' }}>
+            {formatCurrency(totalSpent)}
+          </p>
+        </div>
+        <div className="opt-card flex-1 p-3 text-center">
+          <p className="opt-label">INCOME</p>
+          <p style={{ fontFamily: 'var(--font-display)', fontSize: '14px', color: 'var(--green)', marginTop: '4px' }}>
+            {formatCurrency(totalIncome)}
+          </p>
+        </div>
+      </div>
 
-          {/* Recent transactions */}
-          <div>
-            <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">Recent Transactions</h2>
-            <div className="bg-card rounded-2xl border overflow-hidden">
-              {txns.length === 0 ? (
-                <div className="p-8 text-center text-sm text-muted-foreground">No transactions this month</div>
-              ) : (
-                txns.map((t, i) => (
-                  <div key={t.id} className={cn('flex items-center gap-3 px-4 py-3', i !== txns.length - 1 && 'border-b')}>
-                    <div className="w-8 h-8 rounded-lg flex items-center justify-center text-sm"
-                      style={{ backgroundColor: ((t.category as any)?.color || '#94a3b8') + '22' }}>
-                      {(t.category as any)?.icon || '📦'}
+      {/* Transactions */}
+      {loading ? (
+        <div className="space-y-2">{[...Array(6)].map((_, i) => <div key={i} className="shimmer rounded" style={{ height: '60px' }} />)}</div>
+      ) : dateGroups.length === 0 ? (
+        <div className="opt-card p-8 text-center">
+          <p className="opt-label">NO TRANSACTIONS</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {dateGroups.map(([date, txns]) => (
+            <div key={date}>
+              <p className="opt-label mb-2">{formatDate(date, 'EEE MMM d yyyy').toUpperCase()}</p>
+              <div className="opt-card overflow-hidden">
+                {txns.map((txn, i) => (
+                  <div key={txn.id} className={cn('flex items-center gap-3 px-4 py-3', i !== txns.length - 1 && 'opt-row')}>
+                    <button onClick={() => setSelectedTxn(txn)} className="flex items-center gap-3 flex-1 min-w-0 text-left touch-active">
+                      <div className="w-8 h-8 flex items-center justify-center text-sm flex-shrink-0"
+                        style={{ background: 'rgba(0,245,255,0.06)', border: '1px solid var(--border-cyan)', borderRadius: '2px' }}>
+                        {(txn.category as any)?.icon || '◈'}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p style={{ fontFamily: 'var(--font-sans)', fontSize: '12px', color: 'var(--text-primary)' }} className="truncate">{txn.merchant}</p>
+                        <p className="opt-label" style={{ marginTop: '1px' }}>
+                          {(txn.category as any)?.name || 'UNCATEGORIZED'}
+                          {txn.is_transfer && ' · TRANSFER'}
+                        </p>
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span style={{
+                        fontFamily: 'var(--font-display)', fontSize: '13px',
+                        color: txn.amount > 0 ? 'var(--green)' : 'var(--text-primary)',
+                        textShadow: txn.amount > 0 ? '0 0 8px rgba(0,255,136,0.3)' : 'none',
+                      }}>
+                        {txn.amount > 0 ? '+' : ''}{formatCurrency(txn.amount)}
+                      </span>
+                      <button
+                        onClick={() => deleteTxn(txn.id)}
+                        disabled={deletingId === txn.id}
+                        className="p-1.5 touch-active"
+                        style={{ color: 'var(--red)', opacity: deletingId === txn.id ? 0.4 : 0.6 }}
+                      >
+                        <Trash2 size={13} />
+                      </button>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium truncate">{t.merchant}</p>
-                      <p className="text-xs text-muted-foreground">{formatDate(t.date)}</p>
-                    </div>
-                    <span className={cn('text-sm font-medium tabular-nums', t.amount > 0 ? 'text-emerald-400' : '')}>
-                      {t.amount > 0 ? '+' : ''}{formatCurrency(t.amount)}
-                    </span>
                   </div>
-                ))
-              )}
+                ))}
+              </div>
             </div>
-          </div>
-        </>
+          ))}
+        </div>
       )}
 
-      {accounts.length === 0 && (
-        <div className="bg-card rounded-2xl border p-12 text-center">
-          <p className="text-muted-foreground text-sm mb-2">No accounts yet</p>
-          <a href="/settings" className="text-violet-400 text-sm font-medium">Add your first account →</a>
-        </div>
+      <div className="h-2" />
+
+      {selectedTxn && (
+        <TransactionEditModal
+          transaction={selectedTxn}
+          categories={categories}
+          accounts={allAccounts}
+          onClose={() => setSelectedTxn(null)}
+          onSave={() => { setSelectedTxn(null); loadTransactions() }}
+        />
       )}
     </div>
   )
