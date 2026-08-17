@@ -3,84 +3,41 @@ import { createAdminClient } from '@/lib/supabase/server'
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    const { transactions, account_id } = body
+    const { transactions, accountId } = await req.json()
 
-    if (!transactions?.length || !account_id) {
-      return NextResponse.json({ error: 'Missing transactions or account_id' }, { status: 400 })
+    if (!transactions?.length || !accountId) {
+      return NextResponse.json({ error: 'Missing transactions or accountId' }, { status: 400 })
     }
 
     const supabase = createAdminClient()
 
-    // Verify account exists
-    const { data: account, error: accErr } = await supabase
-      .from('accounts')
-      .select('id, type')
-      .eq('id', account_id)
-      .single()
+    // Single batch ID for this entire import
+    const batchId = crypto.randomUUID()
+    const now = new Date().toISOString()
 
-    if (accErr || !account) {
-      return NextResponse.json({ error: `Account not found: ${accErr?.message}` }, { status: 400 })
-    }
-
-    // Build insert payload - only include valid fields
-    const toInsert = transactions.map((t: any) => ({
-      account_id,
+    const rows = transactions.map((t: any) => ({
+      account_id: accountId,
       date: t.date,
-      merchant: t.merchant || 'Unknown',
-      amount: typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount)) || 0,
+      merchant: t.merchant,
+      amount: t.amount,
       category_id: t.suggested_category_id || null,
       is_transfer: t.is_transfer_candidate || false,
       is_recurring: false,
-      notes: null,
+      import_batch_id: batchId,
+      created_at: now,
+      updated_at: now,
     }))
 
-    // Insert in batches of 20 to avoid issues
-    const batchSize = 20
-    let totalInserted = 0
+    const { error } = await supabase.from('transactions').insert(rows)
 
-    for (let i = 0; i < toInsert.length; i += batchSize) {
-      const batch = toInsert.slice(i, i + batchSize)
-      const { data, error } = await supabase
-        .from('transactions')
-        .insert(batch)
-        .select('id')
-
-      if (error) {
-        console.error('Batch insert error:', error)
-        return NextResponse.json({
-          error: `Database error: ${error.message}`,
-          code: error.code,
-          details: error.details,
-        }, { status: 500 })
-      }
-
-      totalInserted += (data?.length || 0)
+    if (error) {
+      return NextResponse.json({ error: 'Database error: ' + error.message, code: error.code, details: error.details }, { status: 500 })
     }
 
-    // Update account balance
-    const { data: allTxns } = await supabase
-      .from('transactions')
-      .select('amount')
-      .eq('account_id', account_id)
-
-    const total = (allTxns || []).reduce((s: number, t: any) => s + (t.amount || 0), 0)
-    const balance = account.type === 'credit_card'
-      ? Math.abs(Math.min(0, total))
-      : Math.max(0, total)
-
-    await supabase
-      .from('accounts')
-      .update({ balance, updated_at: new Date().toISOString() })
-      .eq('id', account_id)
-
-    return NextResponse.json({ imported: totalInserted, total: transactions.length })
+    return NextResponse.json({ success: true, count: rows.length, batch_id: batchId })
 
   } catch (err: any) {
     console.error('Import error:', err)
-    return NextResponse.json({
-      error: err.message || 'Import failed',
-      stack: err.stack?.substring(0, 500)
-    }, { status: 500 })
+    return NextResponse.json({ error: err.message || 'Import failed' }, { status: 500 })
   }
 }
