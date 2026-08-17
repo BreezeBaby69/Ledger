@@ -333,7 +333,7 @@ export default function AnalyticsPage() {
                     <p className="opt-label" style={{ marginTop: '2px' }}>{formatDate(txn.date, 'EEE MMM d').toUpperCase()}</p>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
-                    {savedId === txn.id {savedId === txn.id && <Check size={14} style={{ color: 'var(--green)' }} />}{savedId === txn.id && <Check size={14} style={{ color: 'var(--green)' }} />} <Check size={14} style={{ color: 'var(--green)' }} />}
+                    {savedId === txn.id && <Check size={14} style={{ color: 'var(--green)' }} />}
                     <button
                       onClick={() => deleteTxn(txn.id)}
                       disabled={savingId === txn.id}
