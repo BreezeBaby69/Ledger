@@ -6,7 +6,7 @@ import { formatCurrency, getCurrentMonth, getPreviousMonths, formatDate } from '
 import { PieChart, Pie, Cell, ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar } from 'recharts'
 import { format, parseISO, subMonths, addMonths } from 'date-fns'
 import { cn } from '@/lib/utils'
-import { ChevronLeft, ChevronRight, ArrowLeft, X, Check } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ArrowLeft, X, Check, Trash2 } from "lucide-react"
 
 interface CategoryData {
   category_id: string
@@ -66,15 +66,36 @@ export default function AnalyticsPage() {
     setAllCategories(cats || [])
     setIncomeCategories((cats || []).filter((c: Category) => c.type === 'income'))
 
-    // Spending breakdown
+    // Spending breakdown — refunds subtract from their category
+    // Fetch both expenses (negative) and refunds (positive, non-income category)
     const { data: txns } = await supabase
       .from('transactions')
       .select('amount, category_id, category:categories(id, name, color, icon, type)')
       .gte('date', start).lte('date', end)
-      .eq('is_transfer', false).lt('amount', 0)
+      .eq('is_transfer', false)
+      .not('category_id', 'is', null)
+
+    // Also get uncategorized expenses
+    const { data: uncatTxns } = await supabase
+      .from('transactions')
+      .select('amount, category_id, category:categories(id, name, color, icon, type)')
+      .gte('date', start).lte('date', end)
+      .eq('is_transfer', false)
+      .is('category_id', null)
+      .lt('amount', 0)
+
+    const allSpendingTxns = [
+      ...(txns || []).filter((t: any) => {
+        const cat = t.category as any
+        // Include expenses (negative) from non-income categories
+        // Include refunds (positive) from non-income categories (they subtract)
+        return cat?.type !== 'income'
+      }),
+      ...(uncatTxns || [])
+    ]
 
     const catMap: Record<string, CategoryData> = {}
-    for (const t of txns || []) {
+    for (const t of allSpendingTxns) {
       const cat = t.category as any
       const id = t.category_id || 'uncategorized'
       if (!catMap[id]) catMap[id] = {
@@ -85,10 +106,17 @@ export default function AnalyticsPage() {
         amount: 0,
         transaction_count: 0,
       }
-      catMap[id].amount += Math.abs(t.amount)
-      catMap[id].transaction_count++
+      // Expenses add to total, refunds (positive) subtract
+      if (t.amount < 0) {
+        catMap[id].amount += Math.abs(t.amount)
+        catMap[id].transaction_count++
+      } else {
+        // Refund — subtract from category total
+        catMap[id].amount = Math.max(0, catMap[id].amount - t.amount)
+      }
     }
-    setCategoryData(Object.values(catMap).sort((a, b) => b.amount - a.amount))
+    // Filter out categories with zero or negative totals after refunds
+    setCategoryData(Object.values(catMap).filter(c => c.amount > 0).sort((a, b) => b.amount - a.amount))
 
     // Income breakdown
     const { data: incomeTxns } = await supabase
@@ -202,6 +230,17 @@ export default function AnalyticsPage() {
     setSavingId(null)
   }
 
+  async function deleteTxn(txnId: string) {
+    if (!confirm("Delete this transaction?")) return
+    setSavingId(txnId)
+    const { error } = await supabase.from("transactions").delete().eq("id", txnId)
+    if (!error) {
+      setDrillTxns(prev => prev.filter(t => t.id !== txnId))
+      loadData()
+    }
+    setSavingId(null)
+  }
+
   async function dismissRecurring(merchant: string) {
     await supabase.from('dismissed_recurring').insert({ merchant })
     setDismissedMerchants(prev => new Set([...prev, merchant]))
@@ -294,7 +333,15 @@ export default function AnalyticsPage() {
                     <p className="opt-label" style={{ marginTop: '2px' }}>{formatDate(txn.date, 'EEE MMM d').toUpperCase()}</p>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0">
-                    {savedId === txn.id && <Check size={14} style={{ color: 'var(--green)' }} />}
+                    {savedId === txn.id {savedId === txn.id && <Check size={14} style={{ color: 'var(--green)' }} />}{savedId === txn.id && <Check size={14} style={{ color: 'var(--green)' }} />} <Check size={14} style={{ color: 'var(--green)' }} />}
+                    <button
+                      onClick={() => deleteTxn(txn.id)}
+                      disabled={savingId === txn.id}
+                      className="p-1 touch-active"
+                      style={{ color: 'var(--red)', opacity: savingId === txn.id ? 0.4 : 1 }}
+                    >
+                      <Trash2 size={13} />
+                    </button>
                     <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', color: txn.amount > 0 ? 'var(--green)' : 'var(--text-primary)' }}>
                       {txn.amount > 0 ? '+' : ''}{formatCurrency(txn.amount)}
                     </span>
