@@ -368,7 +368,10 @@ export default function AnalyticsPage() {
           {view === 'spending' && (
             <div className="space-y-4">
               <div className="opt-card p-4">
-                <p className="opt-label mb-4">// SPENDING BY CATEGORY</p>
+                <div className="flex items-center justify-between mb-4">
+                  <p className="opt-label">// SPENDING BY CATEGORY</p>
+                  <p style={{ fontFamily: 'var(--font-display)', fontSize: '14px', color: 'var(--orange)', textShadow: '0 0 8px rgba(255,107,0,0.3)' }}>{formatCurrency(totalSpent)}</p>
+                </div>
                 <div className="flex items-center gap-4">
                   <div style={{ width: 140, height: 140 }} className="flex-shrink-0">
                     <ResponsiveContainer width={140} height={140}>
