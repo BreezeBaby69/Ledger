@@ -3,15 +3,21 @@ import { createAdminClient } from '@/lib/supabase/server'
 
 export async function POST(req: NextRequest) {
   try {
-    const { transactions, accountId } = await req.json()
+    const body = await req.json()
+
+    // Accept both camelCase and snake_case field names
+    const transactions = body.transactions
+    const accountId = body.accountId || body.account_id
 
     if (!transactions?.length || !accountId) {
-      return NextResponse.json({ error: 'Missing transactions or accountId' }, { status: 400 })
+      return NextResponse.json({ 
+        error: 'Missing transactions or accountId',
+        received: Object.keys(body)
+      }, { status: 400 })
     }
 
     const supabase = createAdminClient()
 
-    // Single batch ID for this entire import
     const batchId = crypto.randomUUID()
     const now = new Date().toISOString()
 
@@ -20,8 +26,8 @@ export async function POST(req: NextRequest) {
       date: t.date,
       merchant: t.merchant,
       amount: t.amount,
-      category_id: t.suggested_category_id || null,
-      is_transfer: t.is_transfer_candidate || false,
+      category_id: t.suggested_category_id || t.category_id || null,
+      is_transfer: t.is_transfer_candidate || t.is_transfer || false,
       is_recurring: false,
       import_batch_id: batchId,
       created_at: now,
@@ -31,7 +37,11 @@ export async function POST(req: NextRequest) {
     const { error } = await supabase.from('transactions').insert(rows)
 
     if (error) {
-      return NextResponse.json({ error: 'Database error: ' + error.message, code: error.code, details: error.details }, { status: 500 })
+      return NextResponse.json({ 
+        error: 'Database error: ' + error.message, 
+        code: error.code, 
+        details: error.details 
+      }, { status: 500 })
     }
 
     return NextResponse.json({ success: true, count: rows.length, batch_id: batchId })
