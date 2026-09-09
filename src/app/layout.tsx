@@ -24,11 +24,8 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <head>
-  /icon.png
-  <link.png
-
-  <meta name="apple-mobile-web-app-capable" content="yes" />
+     <head>
+  <link rel="apple-touch-icon" hrefme="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="mobile-web-app-capable" content="yes" />
 </head>
