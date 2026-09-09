@@ -10,9 +10,10 @@ export const metadata: Metadata = {
     statusBarStyle: 'black-translucent',
     title: 'OPTIMIZE',
   },
-  icons: {
-    apple: '/icon.png',
-  },
+ icons: {
+  apple: '/icon.png',
+  icon: '/icon.png',
+},
   themeColor: '#010a0f',
 }
 
