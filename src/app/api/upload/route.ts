@@ -151,23 +151,17 @@ Return ONLY the raw JSON array starting with [ and ending with ].`
         }
       }
 
-     -      // Auto-flag credit card payments and transfers as transfers
--      const isCreditCardPayment = /credit card|payment.*visa|payment.*mastercard|payment.*amex/i.test(merchantLower)
--      const isTransferOut = amount < 0 && /^transfer|e-transfer sent/i.test(merchantLower)
--      const isAutoTransfer = isCreditCardPayment || isTransferOut
--
--      const isDuplicate = existingSet.has(`${t.date}|${t.merchant}|${amount}`)
-+      // Auto-flag credit card payments as transfers (moving money between two
-+      // accounts you already track). e-Transfers are payments to other people —
-+      // real expenses/income — so they should NOT be auto-flagged as transfers.
-+      const isCreditCardPayment = /credit card|payment.*visa|payment.*mastercard|payment.*amex/i.test(merchantLower)
-+      const isAutoTransfer = isCreditCardPayment
-+
-+      // Only treat it as a duplicate if the merchant text matches exactly AND
-+      // it's not a generic e-Transfer label — otherwise two separate e-Transfers
-+      // sent on the same day for the same amount get incorrectly merged.
-+      const isGenericEtransferLabel = /^interac e-transfer|^e-transfer/i.test(merchantLower)
-+      const isDuplicate = !isGenericEtransferLabel && existingSet.has(`${t.date}|${t.merchant}|${amount}`)
+          // Auto-flag credit card payments as transfers (moving money between two
+      // accounts you already track). e-Transfers are payments to other people —
+      // real expenses/income — so they should NOT be auto-flagged as transfers.
+      const isCreditCardPayment = /credit card|payment.*visa|payment.*mastercard|payment.*amex/i.test(merchantLower)
+      const isAutoTransfer = isCreditCardPayment
+
+      // Only treat it as a duplicate if the merchant text matches exactly AND
+      // it's not a generic e-Transfer label — otherwise two separate e-Transfers
+      // sent on the same day for the same amount get incorrectly merged.
+      const isGenericEtransferLabel = /^interac e-transfer|^e-transfer/i.test(merchantLower)
+      const isDuplicate = !isGenericEtransferLabel && existingSet.has(`${t.date}|${t.merchant}|${amount}`)
 
       return {
         id: crypto.randomUUID(),
