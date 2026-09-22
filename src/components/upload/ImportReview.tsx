@@ -227,7 +227,7 @@ export default function ImportReview({ transactions, accountId, onImport, onCanc
       </div>
 
       {/* Import button */}
-      <div className="sticky bottom-20 pt-2">
+      <div className="pt-4 pb-6">
         <button
           onClick={handleImport}
           disabled={approved.length === 0 || importing}
