@@ -76,7 +76,6 @@ export default function TransactionEditModal({ transaction, categories, accounts
   useEffect(() => {
     async function loadLinkInfo() {
       if (isRefund && linkedTransactionId) {
-        // This is a refund already linked to an original expense — fetch it for display
         const { data } = await supabase
           .from('transactions')
           .select('id, date, merchant, amount, category_id')
@@ -84,7 +83,6 @@ export default function TransactionEditModal({ transaction, categories, accounts
           .maybeSingle()
         if (data) setLinkedOriginal(data as LinkCandidate)
       } else if (!isRefund) {
-        // This is an expense — fetch any refunds already linked to it
         const { data } = await supabase
           .from('transactions')
           .select('id, date, merchant, amount, category_id')
@@ -109,9 +107,9 @@ export default function TransactionEditModal({ transaction, categories, accounts
         .limit(200)
 
       if (isRefund) {
-        query = query.lt('amount', 0) // refund links to an expense (negative)
+        query = query.lt('amount', 0)
       } else {
-        query = query.gt('amount', 0) // showing what could refund this expense
+        query = query.gt('amount', 0)
       }
 
       const { data } = await query
@@ -137,7 +135,6 @@ export default function TransactionEditModal({ transaction, categories, accounts
     setShowPicker(false)
     setSearch('')
 
-    // Auto-inherit the original expense's category
     if (candidate.category_id) {
       setCategoryId(candidate.category_id)
     }
@@ -160,7 +157,7 @@ export default function TransactionEditModal({ transaction, categories, accounts
       account_id: accountId,
       date,
       notes: notes || null,
-      is_transfer: isTransferRef.current, // use ref, not state
+      is_transfer: isTransferRef.current,
       linked_transaction_id: isRefund ? linkedTransactionIdRef.current : (transaction as any).linked_transaction_id ?? null,
     }
 
@@ -175,7 +172,6 @@ export default function TransactionEditModal({ transaction, categories, accounts
       return
     }
 
-    // Learn from category correction
     if (categoryId && categoryId !== transaction.category_id) {
       try {
         const { data: existing } = await supabase
@@ -234,7 +230,6 @@ export default function TransactionEditModal({ transaction, categories, accounts
           </p>
           <p className="text-xs text-muted-foreground mt-1">{formatDate(date, 'MMMM d, yyyy')}</p>
 
-          {/* Net summary for an expense with linked refunds */}
           {!isRefund && linkedRefunds.length > 0 && (
             <p className="text-xs mt-2">
               <span className="text-emerald-400">
@@ -312,48 +307,6 @@ export default function TransactionEditModal({ transaction, categories, accounts
                   <Link2 size={14} /> Link to original expense
                 </button>
               )}
-
-              {/* Picker */}
-              {showPicker && (
-                <div className="mt-2 border rounded-xl overflow-hidden">
-                  <div className="flex items-center gap-2 px-3 py-2 border-b bg-muted/30">
-                    <Search size={14} className="text-muted-foreground flex-shrink-0" />
-                    <input
-                      autoFocus
-                      value={search}
-                      onChange={e => setSearch(e.target.value)}
-                      placeholder="Search merchant or amount..."
-                      className="flex-1 bg-transparent text-sm focus:outline-none"
-                    />
-                    <button onClick={() => { setShowPicker(false); setSearch('') }} className="p-1 hover:bg-muted rounded-lg flex-shrink-0">
-                      <X size={14} className="text-muted-foreground" />
-                    </button>
-                  </div>
-                  <div className="max-h-60 overflow-y-auto">
-                    {loadingCandidates && (
-                      <p className="text-xs text-muted-foreground text-center py-4">Loading...</p>
-                    )}
-                    {!loadingCandidates && filteredCandidates.length === 0 && (
-                      <p className="text-xs text-muted-foreground text-center py-4">No matching transactions found</p>
-                    )}
-                    {filteredCandidates.map(c => (
-                      <button
-                        key={c.id}
-                        onClick={() => linkTo(c)}
-                        className="w-full flex items-center justify-between gap-2 px-3 py-2.5 hover:bg-muted/50 transition-colors text-left border-b last:border-b-0"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium truncate">{c.merchant}</p>
-                          <p className="text-xs text-muted-foreground">{formatDate(c.date, 'MMM d, yyyy')}</p>
-                        </div>
-                        <span className="text-sm font-semibold tabular-nums flex-shrink-0">
-                          {formatCurrency(c.amount)}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
             </div>
           )}
 
@@ -404,6 +357,58 @@ export default function TransactionEditModal({ transaction, categories, accounts
           </button>
         </div>
       </div>
+
+      {/* Full-screen link picker — sits above the edit modal */}
+      {showPicker && (
+        <div className="fixed inset-0 z-[60] flex flex-col bg-card">
+          <div className="flex items-center justify-between px-5 py-3 border-b flex-shrink-0" style={{ paddingTop: 'calc(env(safe-area-inset-top) + 12px)' }}>
+            <h2 className="font-semibold">Link to Expense</h2>
+            <button onClick={() => { setShowPicker(false); setSearch('') }} className="p-2 rounded-xl hover:bg-muted transition-colors">
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 px-5 py-3 border-b flex-shrink-0">
+            <Search size={16} className="text-muted-foreground flex-shrink-0" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search merchant or amount (optional)..."
+              className="flex-1 bg-transparent text-sm focus:outline-none"
+            />
+            {search && (
+              <button onClick={() => setSearch('')} className="p-1 hover:bg-muted rounded-lg flex-shrink-0">
+                <X size={14} className="text-muted-foreground" />
+              </button>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
+            {loadingCandidates && (
+              <p className="text-sm text-muted-foreground text-center py-8">Loading transactions...</p>
+            )}
+            {!loadingCandidates && filteredCandidates.length === 0 && (
+              <p className="text-sm text-muted-foreground text-center py-8">No matching transactions found</p>
+            )}
+            {filteredCandidates.map(c => (
+              <button
+                key={c.id}
+                onClick={() => linkTo(c)}
+                className="w-full flex items-center justify-between gap-3 px-5 py-4 hover:bg-muted/50 active:bg-muted transition-colors text-left border-b"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium truncate">{c.merchant}</p>
+                  <p className="text-xs text-muted-foreground">{formatDate(c.date, 'MMM d, yyyy')}</p>
+                </div>
+                <span className="text-base font-semibold tabular-nums flex-shrink-0">
+                  {formatCurrency(c.amount)}
+                </span>
+              </button>
+            ))}
+            <div style={{ height: 'env(safe-area-inset-bottom)' }} />
+          </div>
+        </div>
+      )}
     </div>
   )
 }
