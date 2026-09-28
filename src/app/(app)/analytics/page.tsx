@@ -70,7 +70,7 @@ export default function AnalyticsPage() {
     // Fetch both expenses (negative) and refunds (positive, non-income category)
     const { data: txns } = await supabase
       .from('transactions')
-      .select('amount, category_id, category:categories(id, name, color, icon, type)')
+      .select('id, amount, category_id, linked_transaction_id, category:categories(id, name, color, icon, type)')
       .gte('date', start).lte('date', end)
       .eq('is_transfer', false)
       .not('category_id', 'is', null)
@@ -78,7 +78,7 @@ export default function AnalyticsPage() {
     // Also get uncategorized expenses
     const { data: uncatTxns } = await supabase
       .from('transactions')
-      .select('amount, category_id, category:categories(id, name, color, icon, type)')
+      .select('id, amount, category_id, linked_transaction_id, category:categories(id, name, color, icon, type)')
       .gte('date', start).lte('date', end)
       .eq('is_transfer', false)
       .is('category_id', null)
@@ -94,8 +94,22 @@ export default function AnalyticsPage() {
       ...(uncatTxns || [])
     ]
 
+    // Cross-month refunds: a refund dated outside this month, but linked to
+    // an expense that falls within this month, still needs to subtract from
+    // that expense's category here.
+    const expenseIds = allSpendingTxns.filter((t: any) => t.amount < 0).map((t: any) => t.id)
+    const alreadyCountedIds = new Set(allSpendingTxns.map((t: any) => t.id))
+    let crossMonthRefunds: any[] = []
+    if (expenseIds.length > 0) {
+      const { data: refundData } = await supabase
+        .from('transactions')
+        .select('id, amount, category_id, linked_transaction_id, category:categories(id, name, color, icon, type)')
+        .in('linked_transaction_id', expenseIds)
+      crossMonthRefunds = (refundData || []).filter((t: any) => !alreadyCountedIds.has(t.id))
+    }
+
     const catMap: Record<string, CategoryData> = {}
-    for (const t of allSpendingTxns) {
+    for (const t of [...allSpendingTxns, ...crossMonthRefunds]) {
       const cat = t.category as any
       const id = t.category_id || 'uncategorized'
       if (!catMap[id]) catMap[id] = {
@@ -118,12 +132,14 @@ export default function AnalyticsPage() {
     // Filter out categories with zero or negative totals after refunds
     setCategoryData(Object.values(catMap).filter(c => c.amount > 0).sort((a, b) => b.amount - a.amount))
 
-    // Income breakdown
+    // Income breakdown — a linked refund is never income, no matter which
+    // month it landed in; it only nets against its original expense above.
     const { data: incomeTxns } = await supabase
       .from('transactions')
       .select('amount, category_id, category:categories(id, name, color, icon, type)')
       .gte('date', start).lte('date', end)
       .eq('is_transfer', false).gt('amount', 0)
+      .is('linked_transaction_id', null)
 
     const incomeMap: Record<string, CategoryData> = {}
     for (const t of incomeTxns || []) {
@@ -147,13 +163,13 @@ export default function AnalyticsPage() {
     const trend = await Promise.all(months.map(async m => {
       const s = m + '-01'
       const e = new Date(parseInt(m.split('-')[0]), parseInt(m.split('-')[1]), 0).toISOString().split('T')[0]
-      const { data } = await supabase.from('transactions').select('amount, is_transfer').gte('date', s).lte('date', e)
+      const { data } = await supabase.from('transactions').select('amount, is_transfer, linked_transaction_id').gte('date', s).lte('date', e)
       const all = data || []
       return {
         month: m,
         label: format(parseISO(m + '-01'), 'MMM').toUpperCase(),
         spent: all.filter((t: any) => t.amount < 0 && !t.is_transfer).reduce((s: number, t: any) => s + Math.abs(t.amount), 0),
-        income: all.filter((t: any) => t.amount > 0 && !t.is_transfer).reduce((s: number, t: any) => s + t.amount, 0),
+        income: all.filter((t: any) => t.amount > 0 && !t.is_transfer && !t.linked_transaction_id).reduce((s: number, t: any) => s + t.amount, 0),
       }
     }))
     setTrendData(trend)
@@ -383,7 +399,7 @@ export default function AnalyticsPage() {
           <ChevronLeft size={16} />
         </button>
         <span style={{ fontFamily: 'var(--font-display)', fontSize: '11px', letterSpacing: '0.2em', color: 'var(--cyan)' }}>{monthLabel}</span>
-        <button onClick={nextMonth} disabled={month === getCurrentMonth()} className="p-2 touch-active" style={{ color: month === getCurrentMonth() ? 'var(--text-muted)' : 'var(--cyan)' }}>
+        <button onClick={nextMonth} disabled={month === getCurrentMonth()} style={{ color: month === getCurrentMonth() ? 'var(--text-muted)' : 'var(--cyan)' }} className="p-2 touch-active">
           <ChevronRight size={16} />
         </button>
       </div>
