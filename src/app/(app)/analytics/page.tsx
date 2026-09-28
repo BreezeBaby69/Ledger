@@ -26,6 +26,13 @@ interface DrillTxn {
   category: { name: string; color: string; icon: string } | null
 }
 
+interface RefundInfo {
+  id: string
+  date: string
+  merchant: string
+  amount: number
+}
+
 interface Category {
   id: string
   name: string
@@ -48,6 +55,7 @@ export default function AnalyticsPage() {
   const [drillCategory, setDrillCategory] = useState<CategoryData | null>(null)
   const [drillMode, setDrillMode] = useState<'spending' | 'income'>('spending')
   const [drillTxns, setDrillTxns] = useState<DrillTxn[]>([])
+  const [refundsByExpense, setRefundsByExpense] = useState<Record<string, RefundInfo[]>>({})
   const [drillLoading, setDrillLoading] = useState(false)
   const [savingId, setSavingId] = useState<string | null>(null)
   const [savedId, setSavedId] = useState<string | null>(null)
@@ -215,7 +223,29 @@ export default function AnalyticsPage() {
     else query = query.eq('category_id', cat.category_id)
 
     const { data } = await query
-    setDrillTxns((data || []) as any[])
+    const txnList = (data || []) as DrillTxn[]
+    setDrillTxns(txnList)
+
+    // For expenses, fetch any refunds linked to them (regardless of the
+    // refund's own date) so each line can show "Refunded: $X · Net: $Y"
+    if (mode === 'spending' && txnList.length > 0) {
+      const ids = txnList.map(t => t.id)
+      const { data: refundData } = await supabase
+        .from('transactions')
+        .select('id, date, merchant, amount, linked_transaction_id')
+        .in('linked_transaction_id', ids)
+
+      const grouped: Record<string, RefundInfo[]> = {}
+      for (const r of (refundData || []) as any[]) {
+        const key = r.linked_transaction_id
+        if (!grouped[key]) grouped[key] = []
+        grouped[key].push({ id: r.id, date: r.date, merchant: r.merchant, amount: r.amount })
+      }
+      setRefundsByExpense(grouped)
+    } else {
+      setRefundsByExpense({})
+    }
+
     setDrillLoading(false)
   }
 
@@ -228,6 +258,7 @@ export default function AnalyticsPage() {
   function closeDrillDown() {
     setDrillCategory(null)
     setDrillTxns([])
+    setRefundsByExpense({})
   }
 
   async function updateTxnCategory(txnId: string, newCategoryId: string) {
@@ -341,42 +372,53 @@ export default function AnalyticsPage() {
           </div>
         ) : (
           <div className="space-y-2">
-            {drillTxns.map(txn => (
-              <div key={txn.id} className="opt-card p-3">
-                <div className="flex items-center justify-between gap-3 mb-2">
-                  <div className="min-w-0 flex-1">
-                    <p style={{ fontFamily: 'var(--font-sans)', fontSize: '12px', color: 'var(--text-primary)' }} className="truncate">{txn.merchant}</p>
-                    <p className="opt-label" style={{ marginTop: '2px' }}>{formatDate(txn.date, 'EEE MMM d').toUpperCase()}</p>
+            {drillTxns.map(txn => {
+              const refunds = refundsByExpense[txn.id]
+              const refundTotal = refunds ? refunds.reduce((s, r) => s + r.amount, 0) : 0
+              const netAmount = txn.amount + refundTotal
+
+              return (
+                <div key={txn.id} className="opt-card p-3">
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <div className="min-w-0 flex-1">
+                      <p style={{ fontFamily: 'var(--font-sans)', fontSize: '12px', color: 'var(--text-primary)' }} className="truncate">{txn.merchant}</p>
+                      <p className="opt-label" style={{ marginTop: '2px' }}>{formatDate(txn.date, 'EEE MMM d').toUpperCase()}</p>
+                      {refunds && refunds.length > 0 && (
+                        <p style={{ fontFamily: 'var(--font-display)', fontSize: '10px', color: 'var(--green)', marginTop: '4px' }}>
+                          ↩ Refunded {formatCurrency(refundTotal)} · Net {formatCurrency(netAmount)}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {savedId === txn.id && <Check size={14} style={{ color: 'var(--green)' }} />}
+                      <button
+                        onClick={() => deleteTxn(txn.id)}
+                        disabled={savingId === txn.id}
+                        className="p-1 touch-active"
+                        style={{ color: 'var(--red)', opacity: savingId === txn.id ? 0.4 : 1 }}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                      <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', color: txn.amount > 0 ? 'var(--green)' : 'var(--text-primary)' }}>
+                        {txn.amount > 0 ? '+' : ''}{formatCurrency(txn.amount)}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 flex-shrink-0">
-                    {savedId === txn.id && <Check size={14} style={{ color: 'var(--green)' }} />}
-                    <button
-                      onClick={() => deleteTxn(txn.id)}
-                      disabled={savingId === txn.id}
-                      className="p-1 touch-active"
-                      style={{ color: 'var(--red)', opacity: savingId === txn.id ? 0.4 : 1 }}
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                    <span style={{ fontFamily: 'var(--font-display)', fontSize: '13px', color: txn.amount > 0 ? 'var(--green)' : 'var(--text-primary)' }}>
-                      {txn.amount > 0 ? '+' : ''}{formatCurrency(txn.amount)}
-                    </span>
-                  </div>
+                  <select
+                    value={txn.category_id || ''}
+                    onChange={e => updateTxnCategory(txn.id, e.target.value)}
+                    disabled={savingId === txn.id}
+                    className="opt-input"
+                    style={{ fontSize: '11px', padding: '6px 10px' }}
+                  >
+                    <option value="">UNCATEGORIZED</option>
+                    {relevantCategories.map(c => (
+                      <option key={c.id} value={c.id}>{c.icon} {c.name.toUpperCase()}</option>
+                    ))}
+                  </select>
                 </div>
-                <select
-                  value={txn.category_id || ''}
-                  onChange={e => updateTxnCategory(txn.id, e.target.value)}
-                  disabled={savingId === txn.id}
-                  className="opt-input"
-                  style={{ fontSize: '11px', padding: '6px 10px' }}
-                >
-                  <option value="">UNCATEGORIZED</option>
-                  {relevantCategories.map(c => (
-                    <option key={c.id} value={c.id}>{c.icon} {c.name.toUpperCase()}</option>
-                  ))}
-                </select>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
 
