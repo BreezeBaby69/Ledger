@@ -39,8 +39,25 @@ export default function DashboardClient({ month: initialMonth }: { month: string
         .order('date', { ascending: false })
 
       const allTxns = txns || []
+
+      // A refund is never treated as income, no matter which month it landed
+      // in — it either nets against its original expense this month, or (if
+      // the original is in a different month) it's fetched separately below.
+      const income = allTxns.filter((t: any) => t.amount > 0 && !t.is_transfer && !t.linked_transaction_id)
       const expenses = allTxns.filter((t: any) => t.amount < 0 && !t.is_transfer)
-      const income = allTxns.filter((t: any) => t.amount > 0 && !t.is_transfer)
+
+      // Refunds linked to THIS month's expenses, regardless of the refund's
+      // own date — covers a refund that arrives in a later (or earlier) month
+      // than the purchase it's undoing.
+      const expenseIds = expenses.map((t: any) => t.id)
+      let crossMonthRefunds: any[] = []
+      if (expenseIds.length > 0) {
+        const { data: refundData } = await supabase
+          .from('transactions')
+          .select('*, category:categories(*)')
+          .in('linked_transaction_id', expenseIds)
+        crossMonthRefunds = refundData || []
+      }
 
       const byCategory: Record<string, MonthlyStats['by_category'][0]> = {}
       for (const t of expenses) {
@@ -58,15 +75,29 @@ export default function DashboardClient({ month: initialMonth }: { month: string
         byCategory[catId].transaction_count++
       }
 
+      // Net each refund against the category of the expense it's linked to
+      for (const r of crossMonthRefunds) {
+        const catId = r.category_id || 'uncategorized'
+        if (byCategory[catId]) {
+          byCategory[catId].amount = Math.max(0, byCategory[catId].amount - r.amount)
+        }
+      }
+
       const totalIncome = income.reduce((s: number, t: any) => s + t.amount, 0)
-      const totalSpent = expenses.reduce((s: number, t: any) => s + Math.abs(t.amount), 0)
+      const totalRefunded = crossMonthRefunds.reduce((s: number, t: any) => s + t.amount, 0)
+      const totalSpent = Math.max(
+        0,
+        expenses.reduce((s: number, t: any) => s + Math.abs(t.amount), 0) - totalRefunded
+      )
 
       setStats({
         month,
         total_spent: totalSpent,
         total_income: totalIncome,
         net: totalIncome - totalSpent,
-        by_category: Object.values(byCategory).sort((a, b) => b.amount - a.amount),
+        by_category: Object.values(byCategory)
+          .filter(c => c.amount > 0)
+          .sort((a, b) => b.amount - a.amount),
       })
 
       setRecentTxns(allTxns.slice(0, 8))
@@ -75,6 +106,9 @@ export default function DashboardClient({ month: initialMonth }: { month: string
       const spentByCategory: Record<string, number> = {}
       for (const t of expenses) {
         if (t.category_id) spentByCategory[t.category_id] = (spentByCategory[t.category_id] || 0) + Math.abs(t.amount)
+      }
+      for (const r of crossMonthRefunds) {
+        if (r.category_id) spentByCategory[r.category_id] = Math.max(0, (spentByCategory[r.category_id] || 0) - r.amount)
       }
       setBudgets((bdgs || []).map((b: any) => ({ ...b, spent: spentByCategory[b.category_id] || 0 })))
     } catch (err) {
