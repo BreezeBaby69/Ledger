@@ -223,7 +223,7 @@ export default function AnalyticsPage() {
     else query = query.eq('category_id', cat.category_id)
 
     const { data } = await query
-    const txnList = (data || []) as DrillTxn[]
+    const txnList = (data || []) as unknown as DrillTxn[]
     setDrillTxns(txnList)
 
     // For expenses, fetch any refunds linked to them (regardless of the
