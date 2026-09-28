@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { Transaction, Category, Account } from '@/lib/types'
 import { createClient } from '@/lib/supabase/client'
 import { formatCurrency, formatDate } from '@/lib/utils'
@@ -21,6 +21,7 @@ interface LinkCandidate {
   merchant: string
   amount: number
   category_id: string | null
+  account_id: string
 }
 
 export default function TransactionEditModal({ transaction, categories, accounts, onClose, onSave }: Props) {
@@ -57,6 +58,10 @@ export default function TransactionEditModal({ transaction, categories, accounts
 
   const supabase = createClient()
 
+  function accountName(id: string) {
+    return accounts.find(a => a.id === id)?.name || ''
+  }
+
   useEffect(() => {
     const scrollY = window.scrollY
     document.body.style.overflow = 'hidden'
@@ -78,55 +83,67 @@ export default function TransactionEditModal({ transaction, categories, accounts
       if (isRefund && linkedTransactionId) {
         const { data } = await supabase
           .from('transactions')
-          .select('id, date, merchant, amount, category_id')
+          .select('id, date, merchant, amount, category_id, account_id')
           .eq('id', linkedTransactionId)
           .maybeSingle()
         if (data) setLinkedOriginal(data as LinkCandidate)
       } else if (!isRefund) {
         const { data } = await supabase
           .from('transactions')
-          .select('id, date, merchant, amount, category_id')
+          .select('id, date, merchant, amount, category_id, account_id')
           .eq('linked_transaction_id', transaction.id)
-        setLinkedRefunds(data || [])
+        setLinkedRefunds((data as LinkCandidate[]) || [])
       }
     }
     loadLinkInfo()
   }, [])
 
-  // Fetch candidates when picker opens (opposite sign, same account, excluding self)
+  // Search ALL transactions (every account, every month) as the user types.
+  // With no search text, show the 200 most recent.
   useEffect(() => {
     if (!showPicker) return
-    async function loadCandidates() {
+    let cancelled = false
+
+    const timer = setTimeout(async () => {
       setLoadingCandidates(true)
+
+      const raw = search.trim()
+      const looksNumeric = /^[-+]?\$?[\d,]*\.?\d+$/.test(raw)
+      const num = looksNumeric ? Math.abs(parseFloat(raw.replace(/[$,+-]/g, ''))) : NaN
+      const safeText = raw.replace(/[,()%*]/g, ' ').trim()
+
       let query = supabase
         .from('transactions')
-        .select('id, date, merchant, amount, category_id')
-        .eq('account_id', accountId)
+        .select('id, date, merchant, amount, category_id, account_id')
         .neq('id', transaction.id)
         .order('date', { ascending: false })
-        .limit(200)
 
-      if (isRefund) {
-        query = query.lt('amount', 0)
+      // Refunds (positive) link to expenses (negative), and vice versa
+      query = isRefund ? query.lt('amount', 0) : query.gt('amount', 0)
+
+      if (safeText) {
+        if (!isNaN(num)) {
+          const target = isRefund ? -num : num
+          query = query.or(`merchant.ilike.%${safeText}%,amount.eq.${target}`)
+        } else {
+          query = query.ilike('merchant', `%${safeText}%`)
+        }
+        query = query.limit(300)
       } else {
-        query = query.gt('amount', 0)
+        query = query.limit(200)
       }
 
       const { data } = await query
-      setCandidates(data || [])
+      if (cancelled) return
+      setCandidates((data as LinkCandidate[]) || [])
       setLoadingCandidates(false)
-    }
-    loadCandidates()
-  }, [showPicker])
+    }, search ? 250 : 0)
 
-  const filteredCandidates = useMemo(() => {
-    if (!search.trim()) return candidates
-    const term = search.toLowerCase()
-    return candidates.filter(c =>
-      c.merchant.toLowerCase().includes(term) ||
-      formatCurrency(c.amount).toLowerCase().includes(term)
-    )
-  }, [candidates, search])
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [showPicker, search])
 
   function linkTo(candidate: LinkCandidate) {
     linkedTransactionIdRef.current = candidate.id
@@ -135,6 +152,7 @@ export default function TransactionEditModal({ transaction, categories, accounts
     setShowPicker(false)
     setSearch('')
 
+    // Auto-inherit the original expense's category
     if (candidate.category_id) {
       setCategoryId(candidate.category_id)
     }
@@ -172,6 +190,7 @@ export default function TransactionEditModal({ transaction, categories, accounts
       return
     }
 
+    // Learn from category correction
     if (categoryId && categoryId !== transaction.category_id) {
       try {
         const { data: existing } = await supabase
@@ -373,7 +392,7 @@ export default function TransactionEditModal({ transaction, categories, accounts
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search merchant or amount (optional)..."
+              placeholder="Search all transactions (merchant or amount)..."
               className="flex-1 bg-transparent text-sm focus:outline-none"
             />
             {search && (
@@ -385,12 +404,12 @@ export default function TransactionEditModal({ transaction, categories, accounts
 
           <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
             {loadingCandidates && (
-              <p className="text-sm text-muted-foreground text-center py-8">Loading transactions...</p>
+              <p className="text-sm text-muted-foreground text-center py-8">Searching...</p>
             )}
-            {!loadingCandidates && filteredCandidates.length === 0 && (
+            {!loadingCandidates && candidates.length === 0 && (
               <p className="text-sm text-muted-foreground text-center py-8">No matching transactions found</p>
             )}
-            {filteredCandidates.map(c => (
+            {candidates.map(c => (
               <button
                 key={c.id}
                 onClick={() => linkTo(c)}
@@ -398,7 +417,10 @@ export default function TransactionEditModal({ transaction, categories, accounts
               >
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium truncate">{c.merchant}</p>
-                  <p className="text-xs text-muted-foreground">{formatDate(c.date, 'MMM d, yyyy')}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {formatDate(c.date, 'MMM d, yyyy')}
+                    {accountName(c.account_id) && ` · ${accountName(c.account_id)}`}
+                  </p>
                 </div>
                 <span className="text-base font-semibold tabular-nums flex-shrink-0">
                   {formatCurrency(c.amount)}
