@@ -64,62 +64,45 @@ export default function AnalyticsPage() {
 
   useEffect(() => { loadData() }, [month])
 
-  async function loadData() {
-    setLoading(true)
-    const start = month + '-01'
-    const end = new Date(parseInt(month.split('-')[0]), parseInt(month.split('-')[1]), 0).toISOString().split('T')[0]
+  // Computes spending/income totals for a given month, netting any linked
+  // refund against its ORIGINAL EXPENSE's category — not the refund's own
+  // category — so linking is reliable even if the refund's category was
+  // never touched or was changed after linking. Also picks up a refund
+  // dated outside this month if it's linked to an expense inside it.
+  async function computeMonthStats(m: string) {
+    const start = m + '-01'
+    const end = new Date(parseInt(m.split('-')[0]), parseInt(m.split('-')[1]), 0).toISOString().split('T')[0]
 
-    // Load all categories
-    const { data: cats } = await supabase.from('categories').select('id, name, color, icon, type').order('name')
-    setAllCategories(cats || [])
-    setIncomeCategories((cats || []).filter((c: Category) => c.type === 'income'))
-
-    // Spending breakdown — refunds subtract from their category
-    // Fetch both expenses (negative) and refunds (positive, non-income category)
-    const { data: txns } = await supabase
+    const { data: monthTxns } = await supabase
       .from('transactions')
-      .select('id, amount, category_id, linked_transaction_id, category:categories(id, name, color, icon, type)')
+      .select('id, amount, category_id, linked_transaction_id, is_transfer, category:categories(id, name, color, icon, type)')
       .gte('date', start).lte('date', end)
-      .eq('is_transfer', false)
-      .not('category_id', 'is', null)
 
-    // Also get uncategorized expenses
-    const { data: uncatTxns } = await supabase
-      .from('transactions')
-      .select('id, amount, category_id, linked_transaction_id, category:categories(id, name, color, icon, type)')
-      .gte('date', start).lte('date', end)
-      .eq('is_transfer', false)
-      .is('category_id', null)
-      .lt('amount', 0)
+    const nonTransfer = (monthTxns || []).filter((t: any) => !t.is_transfer)
+    const expenses = nonTransfer.filter((t: any) => t.amount < 0)
+    const positives = nonTransfer.filter((t: any) => t.amount > 0)
 
-    const allSpendingTxns = [
-      ...(txns || []).filter((t: any) => {
-        const cat = t.category as any
-        // Include expenses (negative) from non-income categories
-        // Include refunds (positive) from non-income categories (they subtract)
-        return cat?.type !== 'income'
-      }),
-      ...(uncatTxns || [])
-    ]
+    const expenseById: Record<string, any> = {}
+    for (const e of expenses) expenseById[e.id] = e
 
-    // Cross-month refunds: a refund dated outside this month, but linked to
-    // an expense that falls within this month, still needs to subtract from
-    // that expense's category here.
-    const expenseIds = allSpendingTxns.filter((t: any) => t.amount < 0).map((t: any) => t.id)
-    const alreadyCountedIds = new Set(allSpendingTxns.map((t: any) => t.id))
+    const linkedThisMonth = positives.filter((t: any) => t.linked_transaction_id)
+    const unlinkedThisMonth = positives.filter((t: any) => !t.linked_transaction_id)
+
+    // A refund dated in a different month than its linked expense — pull it
+    // in here so it still nets against that expense's category.
+    const expenseIds = expenses.map((t: any) => t.id)
     let crossMonthRefunds: any[] = []
     if (expenseIds.length > 0) {
       const { data: refundData } = await supabase
         .from('transactions')
-        .select('id, amount, category_id, linked_transaction_id, category:categories(id, name, color, icon, type)')
+        .select('id, amount, category_id, linked_transaction_id')
         .in('linked_transaction_id', expenseIds)
-      crossMonthRefunds = (refundData || []).filter((t: any) => !alreadyCountedIds.has(t.id))
+      const thisMonthIds = new Set(nonTransfer.map((t: any) => t.id))
+      crossMonthRefunds = (refundData || []).filter((t: any) => !thisMonthIds.has(t.id))
     }
 
     const catMap: Record<string, CategoryData> = {}
-    for (const t of [...allSpendingTxns, ...crossMonthRefunds]) {
-      const cat = t.category as any
-      const id = t.category_id || 'uncategorized'
+    function ensureCat(id: string, cat: any) {
       if (!catMap[id]) catMap[id] = {
         category_id: id,
         name: cat?.name || 'Uncategorized',
@@ -128,29 +111,54 @@ export default function AnalyticsPage() {
         amount: 0,
         transaction_count: 0,
       }
-      // Expenses add to total, refunds (positive) subtract
-      if (t.amount < 0) {
-        catMap[id].amount += Math.abs(t.amount)
-        catMap[id].transaction_count++
-      } else {
-        // Refund — subtract from category total
-        catMap[id].amount = Math.max(0, catMap[id].amount - t.amount)
-      }
+      return catMap[id]
     }
-    // Filter out categories with zero or negative totals after refunds
-    setCategoryData(Object.values(catMap).filter(c => c.amount > 0).sort((a, b) => b.amount - a.amount))
 
-    // Income breakdown — a linked refund is never income, no matter which
-    // month it landed in; it only nets against its original expense above.
-    const { data: incomeTxns } = await supabase
-      .from('transactions')
-      .select('amount, category_id, category:categories(id, name, color, icon, type)')
-      .gte('date', start).lte('date', end)
-      .eq('is_transfer', false).gt('amount', 0)
-      .is('linked_transaction_id', null)
+    // 1. Expenses build up each category's total
+    for (const t of expenses) {
+      const cat = t.category as any
+      const id = t.category_id || 'uncategorized'
+      const c = ensureCat(id, cat)
+      c.amount += Math.abs(t.amount)
+      c.transaction_count++
+    }
+
+    // 2. Linked refunds subtract from the ORIGINAL EXPENSE's category —
+    // never from the refund's own category, whatever that happens to be.
+    for (const r of [...linkedThisMonth, ...crossMonthRefunds]) {
+      const orig = expenseById[r.linked_transaction_id]
+      if (!orig) continue // linked expense isn't in this month — it nets there instead
+      const cat = orig.category as any
+      const id = orig.category_id || 'uncategorized'
+      const c = ensureCat(id, cat)
+      c.amount = Math.max(0, c.amount - r.amount)
+    }
+
+    // 3. Backward-compat: an unlinked positive transaction sitting in a
+    // non-income category (the old manual "same category as the expense"
+    // approach) still subtracts from its own category.
+    for (const t of unlinkedThisMonth) {
+      const cat = t.category as any
+      if (!cat || cat.type === 'income') continue
+      const id = t.category_id || 'uncategorized'
+      const c = ensureCat(id, cat)
+      c.amount = Math.max(0, c.amount - t.amount)
+    }
+
+    const byCategory = Object.values(catMap).filter(c => c.amount > 0).sort((a, b) => b.amount - a.amount)
+    const totalSpent = byCategory.reduce((s, c) => s + c.amount, 0)
+
+    // Income — unlinked positives that are either uncategorized or sit in
+    // an income-type category. Anything already netted as a spending
+    // refund above (non-income category) is excluded, so nothing is
+    // counted as both income and a spending reduction.
+    const incomeTxnsForMonth = unlinkedThisMonth.filter((t: any) => {
+      const cat = t.category as any
+      return !cat || cat.type === 'income'
+    })
 
     const incomeMap: Record<string, CategoryData> = {}
-    for (const t of incomeTxns || []) {
+    for (const t of incomeTxnsForMonth) {
       const cat = t.category as any
       const id = t.category_id || 'uncategorized'
       if (!incomeMap[id]) incomeMap[id] = {
@@ -164,20 +172,33 @@ export default function AnalyticsPage() {
       incomeMap[id].amount += t.amount
       incomeMap[id].transaction_count++
     }
-    setIncomeData(Object.values(incomeMap).sort((a, b) => b.amount - a.amount))
+    const byIncome = Object.values(incomeMap).sort((a, b) => b.amount - a.amount)
+    const totalIncome = byIncome.reduce((s, c) => s + c.amount, 0)
 
-    // 6-month trend
+    return { totalSpent, totalIncome, byCategory, byIncome }
+  }
+
+  async function loadData() {
+    setLoading(true)
+
+    const { data: cats } = await supabase.from('categories').select('id, name, color, icon, type').order('name')
+    setAllCategories(cats || [])
+    setIncomeCategories((cats || []).filter((c: Category) => c.type === 'income'))
+
+    const stats = await computeMonthStats(month)
+    setCategoryData(stats.byCategory)
+    setIncomeData(stats.byIncome)
+
+    // 6-month trend — now uses the same netting logic as the totals above,
+    // so the trend chart always agrees with the current month's numbers.
     const months = getPreviousMonths(6)
     const trend = await Promise.all(months.map(async m => {
-      const s = m + '-01'
-      const e = new Date(parseInt(m.split('-')[0]), parseInt(m.split('-')[1]), 0).toISOString().split('T')[0]
-      const { data } = await supabase.from('transactions').select('amount, is_transfer, linked_transaction_id').gte('date', s).lte('date', e)
-      const all = data || []
+      const s = await computeMonthStats(m)
       return {
         month: m,
         label: format(parseISO(m + '-01'), 'MMM').toUpperCase(),
-        spent: all.filter((t: any) => t.amount < 0 && !t.is_transfer).reduce((s: number, t: any) => s + Math.abs(t.amount), 0),
-        income: all.filter((t: any) => t.amount > 0 && !t.is_transfer && !t.linked_transaction_id).reduce((s: number, t: any) => s + t.amount, 0),
+        spent: s.totalSpent,
+        income: s.totalIncome,
       }
     }))
     setTrendData(trend)
@@ -227,7 +248,8 @@ export default function AnalyticsPage() {
     setDrillTxns(txnList)
 
     // For expenses, fetch any refunds linked to them (regardless of the
-    // refund's own date) so each line can show "Refunded: $X · Net: $Y"
+    // refund's own date or category) so each line can show
+    // "Refunded: $X · Net: $Y"
     if (mode === 'spending' && txnList.length > 0) {
       const ids = txnList.map(t => t.id)
       const { data: refundData } = await supabase
